@@ -6,13 +6,22 @@ Run with:
 
 Pages:
     1. Smart EDA          – automated exploratory data analysis
-    2. ML Recommender     – train & compare ML models
-    3. NL Query Engine    – ask questions in plain English
-    4. Report Generator   – export a professional PDF report
+    2. Data Cleaning      – interactive data cleaning & prep
+    3. ML Recommender     – train & compare ML models
+    4. NL Query Engine    – ask questions in plain English
+    5. Report Generator   – export a professional PDF report
 """
 
+import os
 import tempfile
 from pathlib import Path
+
+# Load .env for Gemini API key
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 import streamlit as st
 import pandas as pd
@@ -40,6 +49,7 @@ from modules.report_gen import generate_report  # noqa: E402
 # ── Page registry ──────────────────────────────────────────────────────────
 _PAGES = {
     "📊  Smart EDA": "eda",
+    "🧹  Data Cleaning": "clean",
     "🤖  ML Recommender": "ml",
     "💬  NL Query Engine": "nlq",
     "📄  Report Generator": "report",
@@ -90,6 +100,14 @@ def _render_sidebar() -> str:
         )
 
         st.divider()
+
+        # ── LLM Priority Chain (status indicators) ────────────────────
+        st.markdown("**🧠 AI Priority**")
+        st.caption("➀ **Groq** (llama-3.3-70b) — fastest")
+        st.caption("➁ **Gemini** (2.0-flash) — fallback")
+        st.caption("➂ **Ollama** (mistral) — local")
+
+        st.divider()
         st.caption("Built with ❤️ using Streamlit")
 
     return _PAGES[page]
@@ -108,7 +126,8 @@ def _handle_upload(uploaded) -> None:
         st.session_state["data_summary"] = summary
         st.session_state["uploaded_name"] = uploaded.name
         # Clear stale results
-        for key in ("eda_results", "ml_results", "nlq_history"):
+        for key in ("eda_results", "ml_results", "nlq_history",
+                     "df_cleaning_wip", "df_cleaned", "clean_ai_suggestions"):
             st.session_state.pop(key, None)
     except Exception as exc:
         st.sidebar.error(f"Failed to load file: {exc}")
@@ -273,6 +292,205 @@ def _render_outliers(results: dict) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# PAGE: Data Cleaning
+# ═══════════════════════════════════════════════════════════════════════════
+def _page_clean() -> None:
+    st.markdown("# 🧹 Data Cleaning")
+    st.markdown("Clean and prepare your data before modelling.")
+
+    if "df" not in st.session_state:
+        st.warning("⬅️  Upload a dataset in the sidebar to begin.")
+        return
+
+    from modules.data_cleaner import (
+        missing_value_summary, fill_missing,
+        detect_duplicates, remove_duplicates,
+        detect_outliers_iqr, remove_outliers, cap_outliers,
+        suggest_type_fixes, fix_column_type,
+        drop_columns, build_before_after_summary,
+        get_ai_cleaning_suggestions,
+    )
+
+    original_df = st.session_state["df"]
+    # Work on a copy (or the already-in-progress cleaned copy)
+    if "df_cleaning_wip" not in st.session_state:
+        st.session_state["df_cleaning_wip"] = original_df.copy()
+    df = st.session_state["df_cleaning_wip"]
+
+    # ── 0. AI Cleaning Suggestions ─────────────────────────────────────
+    with st.expander("🧠 AI Cleaning Suggestions", expanded=False):
+        if st.button("Get AI Recommendations", key="clean_ai_btn"):
+            if "eda_results" in st.session_state:
+                with st.spinner("Asking AI for cleaning advice…"):
+                    suggestions = get_ai_cleaning_suggestions(
+                        st.session_state["eda_results"]
+                    )
+                if suggestions:
+                    st.session_state["clean_ai_suggestions"] = suggestions
+                else:
+                    st.info("AI could not generate suggestions. Run Smart EDA first for better results.")
+            else:
+                st.info("Run **Smart EDA** first so the AI has data context.")
+
+        if "clean_ai_suggestions" in st.session_state:
+            st.markdown(st.session_state["clean_ai_suggestions"])
+
+    # ── 1. Missing Value Handling ──────────────────────────────────────
+    st.markdown("### 1️⃣ Missing Value Handling")
+    mv = missing_value_summary(df)
+    if mv.empty:
+        st.success("No missing values! ✅")
+    else:
+        st.dataframe(mv, use_container_width=True, hide_index=True)
+        col_to_fix = st.selectbox(
+            "Column to fix",
+            mv["Column"].tolist(),
+            key="clean_mv_col",
+        )
+        strategy = st.selectbox(
+            "Strategy",
+            ["drop", "mean", "median", "mode", "custom"],
+            key="clean_mv_strat",
+        )
+        custom_val = None
+        if strategy == "custom":
+            custom_val = st.text_input("Custom fill value", key="clean_mv_custom")
+
+        if st.button("Apply Missing Value Fix", key="clean_mv_btn"):
+            df = fill_missing(df, col_to_fix, strategy, custom_val)
+            st.session_state["df_cleaning_wip"] = df
+            st.success(f"Applied **{strategy}** to `{col_to_fix}`.")
+            st.rerun()
+
+    st.divider()
+
+    # ── 2. Duplicate Removal ───────────────────────────────────────────
+    st.markdown("### 2️⃣ Duplicate Removal")
+    dup_count = detect_duplicates(df)
+    if dup_count == 0:
+        st.success("No duplicates found! ✅")
+    else:
+        st.warning(f"Found **{dup_count}** duplicate rows.")
+        if st.button("Remove Duplicates", key="clean_dup_btn"):
+            df = remove_duplicates(df)
+            st.session_state["df_cleaning_wip"] = df
+            st.success(f"Removed {dup_count} duplicates.")
+            st.rerun()
+
+    st.divider()
+
+    # ── 3. Outlier Removal ─────────────────────────────────────────────
+    st.markdown("### 3️⃣ Outlier Detection & Handling")
+    num_cols = df.select_dtypes(include="number").columns.tolist()
+    if not num_cols:
+        st.info("No numeric columns for outlier analysis.")
+    else:
+        out_col = st.selectbox("Numeric column", num_cols, key="clean_out_col")
+        info = detect_outliers_iqr(df, out_col)
+        if info["count"] == 0:
+            st.success(f"No outliers in `{out_col}`. ✅")
+        else:
+            st.warning(
+                f"**{info['count']}** outliers in `{out_col}` "
+                f"(bounds: {info['lower_bound']} – {info['upper_bound']})"
+            )
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Remove Outliers", key="clean_out_rm"):
+                    df = remove_outliers(df, out_col)
+                    st.session_state["df_cleaning_wip"] = df
+                    st.success(f"Removed {info['count']} outlier rows.")
+                    st.rerun()
+            with c2:
+                if st.button("Cap Outliers", key="clean_out_cap"):
+                    df = cap_outliers(df, out_col)
+                    st.session_state["df_cleaning_wip"] = df
+                    st.success("Outliers capped to IQR bounds.")
+                    st.rerun()
+
+    st.divider()
+
+    # ── 4. Data Type Fixing ────────────────────────────────────────────
+    st.markdown("### 4️⃣ Data Type Fixing")
+    fixes = suggest_type_fixes(df)
+    if not fixes:
+        st.success("All column types look correct! ✅")
+    else:
+        for fix in fixes:
+            col_name = fix["column"]
+            st.markdown(
+                f"**`{col_name}`**: {fix['current']} → {fix['suggested']}"
+            )
+            target = "numeric" if "numeric" in fix["suggested"] else "datetime"
+            if st.button(f"Convert `{col_name}`", key=f"clean_type_{col_name}"):
+                df = fix_column_type(df, col_name, target)
+                st.session_state["df_cleaning_wip"] = df
+                st.success(f"Converted `{col_name}` to {target}.")
+                st.rerun()
+
+    st.divider()
+
+    # ── 5. Column Dropping ─────────────────────────────────────────────
+    st.markdown("### 5️⃣ Drop Columns")
+    cols_to_drop = st.multiselect(
+        "Select columns to drop",
+        df.columns.tolist(),
+        key="clean_drop_cols",
+    )
+    if cols_to_drop and st.button("Drop Selected Columns", key="clean_drop_btn"):
+        df = drop_columns(df, cols_to_drop)
+        st.session_state["df_cleaning_wip"] = df
+        st.success(f"Dropped {len(cols_to_drop)} column(s).")
+        st.rerun()
+
+    st.divider()
+
+    # ── 6. Before / After Preview ──────────────────────────────────────
+    st.markdown("### 📊 Before / After Summary")
+    summary = build_before_after_summary(original_df, df)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Rows", summary["cleaned_rows"], delta=-summary["rows_removed"])
+    c2.metric("Missing Values", summary["cleaned_missing"],
+              delta=-(summary["original_missing"] - summary["cleaned_missing"]))
+    c3.metric("Duplicates", summary["cleaned_duplicates"],
+              delta=-(summary["original_duplicates"] - summary["cleaned_duplicates"]))
+
+    c4, c5 = st.columns(2)
+    c4.metric("Original Columns", summary["original_cols"])
+    c5.metric("Cleaned Columns", summary["cleaned_cols"],
+              delta=-summary["cols_removed"])
+
+    st.divider()
+
+    # ── 7. Finalize & Download ─────────────────────────────────────────
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        if st.button("✅  Save Cleaned Data", type="primary", use_container_width=True,
+                      key="clean_save_btn"):
+            st.session_state["df"] = df.copy()
+            st.session_state["df_cleaned"] = True
+            # Invalidate previous EDA / ML so they re-run on cleaned data
+            st.session_state.pop("eda_results", None)
+            st.session_state.pop("ml_results", None)
+            st.success(
+                "Cleaned dataset saved! "
+                "ML Recommender will now use the cleaned data."
+            )
+
+    with col_b:
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇️  Download CSV",
+            data=csv,
+            file_name="cleaned_data.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="clean_dl_btn",
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # PAGE: ML Recommender
 # ═══════════════════════════════════════════════════════════════════════════
 def _page_ml() -> None:
@@ -284,6 +502,8 @@ def _page_ml() -> None:
         return
 
     df = st.session_state["df"]
+    if st.session_state.get("df_cleaned"):
+        st.info("✅ Using **cleaned** dataset.")
 
     # ── Target selection ───────────────────────────────────────────────
     target = st.selectbox(
@@ -330,15 +550,19 @@ def _page_ml() -> None:
         rows.append(row)
 
     res_df = pd.DataFrame(rows)
+
+    # Highlight the best model row with dark green + white bold text
+    best_model = result.get("best_model")
+
+    def _style_best_row(row):
+        if row["Model"] == best_model:
+            return [
+                "background-color: #1a7a3c; color: white; font-weight: bold"
+            ] * len(row)
+        return [""] * len(row)
+
     st.dataframe(
-        res_df.style.highlight_min(
-            subset=[c for c in res_df.columns if c not in ("Rank", "Model")],
-            color="#e8f5e9",
-        ) if result["task_type"] == "regression" else
-        res_df.style.highlight_max(
-            subset=[c for c in res_df.columns if c not in ("Rank", "Model")],
-            color="#e8f5e9",
-        ),
+        res_df.style.apply(_style_best_row, axis=1),
         use_container_width=True,
         hide_index=True,
     )
@@ -347,6 +571,64 @@ def _page_ml() -> None:
     if result.get("class_labels"):
         st.markdown(f"**Class labels:** {', '.join(str(l) for l in result['class_labels'])}")
 
+    # ── AI Summary (one-shot LLM call) ─────────────────────────────────
+    _ml_ai_summary(result)
+
+
+def _ml_ai_summary(result: dict) -> None:
+    """Generate a one-shot LLM summary of ML results (single API call)."""
+
+    # Only generate once per result set (cache in session state)
+    cache_key = f"ml_summary_{result.get('best_model', '')}_{result.get('task_type', '')}"
+    if cache_key in st.session_state:
+        summary_data = st.session_state[cache_key]
+        st.markdown("### 🧠 AI Analysis")
+        st.info(summary_data["text"])
+        if summary_data.get("warning"):
+            st.warning(summary_data["warning"])
+        return
+
+    if st.button("🧠  Generate AI Summary", key="ml_ai_btn", use_container_width=True):
+        # Build a compact text summary for the LLM prompt
+        task = result["task_type"]
+        best = result.get("best_model", "N/A")
+        lines = [f"Task: {task}, Best model: {best}"]
+        for r in sorted(result.get("results", []), key=lambda x: x.get("rank") or 999):
+            m = r.get("metrics", {})
+            metrics_str = ", ".join(f"{k}={v}" for k, v in m.items())
+            lines.append(f"  {r.get('rank', '–')}. {r['model']}: {metrics_str}")
+
+        prompt = (
+            "Role: data scientist. 2-3 sentences: which model won, why (cite metrics), "
+            "one recommendation.\n\n" + "\n".join(lines)
+        )
+
+        with st.spinner("Generating AI summary…"):
+            try:
+                from llm.client_factory import get_llm_response, GROQ_MODEL_SMALL
+                summary_text, meta = get_llm_response(
+                    prompt,
+                    temperature=0.4,
+                    max_tokens=300,
+                    groq_model=GROQ_MODEL_SMALL,
+                )
+                warning = meta.get("fallback_warning")
+
+                # Cache so we don't re-call the LLM
+                st.session_state[cache_key] = {
+                    "text": summary_text,
+                    "warning": warning,
+                    "backend_used": meta.get("backend_used"),
+                    "model_used": meta.get("model_used"),
+                }
+
+                st.markdown("### 🧠 AI Analysis")
+                st.info(summary_text)
+                st.caption(f"✅ Generated by **{meta.get('backend_used', '').title()}** ({meta.get('model_used', 'N/A')})")
+                if warning:
+                    st.warning(warning)
+            except Exception as exc:
+                st.error(f"AI summary failed: {exc}")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PAGE: NL Query Engine
@@ -364,7 +646,7 @@ def _page_nlq() -> None:
     # ── Mode selector ──────────────────────────────────────────────────
     mode = st.radio(
         "Mode",
-        ["🤖 AI-powered (Ollama)", "✏️ Manual code"],
+        ["🤖 AI-powered (LLM)", "✏️ Manual code"],
         horizontal=True,
         key="nlq_mode",
     )
@@ -377,7 +659,7 @@ def _page_nlq() -> None:
 
 def _nlq_ai_mode(df: pd.DataFrame) -> None:
     """Use the LLM to generate and execute code."""
-    from modules.nl_query import ask  # noqa: E402 – imports ollama
+    from modules.nl_query import ask  # noqa: E402 – imports llm
 
     question = st.text_area(
         "Ask a question about your data",
@@ -385,15 +667,21 @@ def _nlq_ai_mode(df: pd.DataFrame) -> None:
         key="nlq_question",
     )
 
-    col1, col2 = st.columns([3, 1])
-    model = col2.text_input("Ollama model", value="mistral", key="nlq_model")
+    st.caption("🧠 Priority: **Groq** → Gemini → Ollama")
 
-    if col1.button("🚀  Ask", type="primary", use_container_width=True):
+    if st.button("🚀  Ask", type="primary", use_container_width=True):
         if not question.strip():
             st.warning("Please enter a question.")
             return
         with st.spinner("Thinking…"):
-            out = ask(df, question, model=model)
+            out = ask(df, question)
+
+        if out.get("fallback_warning"):
+            st.warning(out["fallback_warning"])
+
+        # Show which backend actually answered
+        if out.get("backend_used"):
+            st.caption(f"✅ Answered by **{out['backend_used'].title()}** ({out.get('model_used', 'N/A')})")
 
         if out["success"]:
             st.markdown("#### Generated Code")
@@ -496,6 +784,10 @@ def _page_report() -> None:
             ai_summary if ai_summary.strip() else None,
             inc_overview, inc_eda, inc_ml,
         )
+        # Pass backend config for AI-generated report sections
+        report_data["llm_backend"] = st.session_state.get("llm_backend", "ollama")
+        report_data["ollama_model"] = st.session_state.get("llm_model", "mistral")
+        report_data["gemini_api_key"] = os.getenv("GEMINI_API_KEY")
 
         with st.spinner("Generating PDF…"):
             with tempfile.NamedTemporaryFile(
@@ -564,6 +856,8 @@ def main() -> None:
 
     if page == "eda":
         _page_eda()
+    elif page == "clean":
+        _page_clean()
     elif page == "ml":
         _page_ml()
     elif page == "nlq":

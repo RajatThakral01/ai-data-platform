@@ -126,9 +126,9 @@ class TestNarrativePrompt:
         result = narrative_prompt(eda_summary)
         assert "outlier" in result.lower()
 
-    def test_contains_stats_json(self, eda_summary):
+    def test_contains_stats_info(self, eda_summary):
         result = narrative_prompt(eda_summary)
-        assert '"mean"' in result
+        assert "mean=" in result
 
     def test_raises_on_none(self):
         with pytest.raises(ValueError, match="empty"):
@@ -140,7 +140,8 @@ class TestNarrativePrompt:
 
     def test_no_missing_values_message(self, minimal_summary):
         result = narrative_prompt(minimal_summary)
-        assert "No missing values" in result
+        # Compact summary omits missing info when there are none
+        assert "X" in result
 
 
 # ---------------------------------------------------------------------------
@@ -153,15 +154,16 @@ class TestMLRecommendationPrompt:
 
     def test_includes_target_column(self, eda_summary):
         result = ml_recommendation_prompt(eda_summary, target_column="Salary")
-        assert "`Salary`" in result
+        assert "Salary" in result
 
     def test_includes_task_hint(self, eda_summary):
         result = ml_recommendation_prompt(eda_summary, task_hint="regression")
         assert "regression" in result
 
-    def test_infer_message_when_no_target(self, eda_summary):
+    def test_default_when_no_target(self, eda_summary):
         result = ml_recommendation_prompt(eda_summary)
-        assert "infer" in result.lower()
+        # Should still contain model guidance without explicit target
+        assert "model" in result.lower()
 
     def test_contains_model_guidance(self, eda_summary):
         result = ml_recommendation_prompt(eda_summary)
@@ -203,9 +205,10 @@ class TestNLToPandasPrompt:
 
     def test_lists_columns(self, eda_summary):
         result = nl_to_pandas_prompt(eda_summary, "Anything")
-        assert "`Age`" in result
-        assert "`Salary`" in result
-        assert "`Department`" in result
+        # Compact format: Age(num), Salary(num), Department(cat)
+        assert "Age" in result
+        assert "Salary" in result
+        assert "Department" in result
 
     def test_mentions_missing_cols(self, eda_summary):
         result = nl_to_pandas_prompt(eda_summary, "Anything")

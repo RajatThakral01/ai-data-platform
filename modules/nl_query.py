@@ -36,7 +36,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from llm.ollama_client import OllamaClient
+from llm.client_factory import get_llm_response
 from llm.prompts import nl_to_pandas_prompt
 
 logger = logging.getLogger(__name__)
@@ -278,6 +278,47 @@ def _quick_summary(df: pd.DataFrame) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+_SYSTEM_PROMPT = (
+    "You are a Python data-analysis expert. "
+    "Return ONLY executable Python code in a fenced code block. "
+    "Always write Pandas code in simple step-by-step operations. "
+    "Never chain boolean filtering with indexing in a single line. "
+    "For example, instead of df[col].value_counts()[df[col2] == val].idxmax(), "
+    "always split it into separate steps like: "
+    "filtered = df[df[col2] == val] then result = filtered[col].value_counts().idxmax(). "
+    "Break complex operations into named intermediate variables. "
+    "Always assign the final answer to a variable called `result`."
+)
+
+_CODE_FIX_PROMPT = """\
+The following Python code was generated to answer a data question, but it
+failed with an error. Please fix the code.
+
+**Original question:**
+> {question}
+
+**Failed code:**
+```python
+{code}
+```
+
+**Error:**
+{error}
+
+Write the corrected Python code. Follow these rules:
+1. Use simple step-by-step operations — no chained boolean filtering with indexing.
+2. Break complex logic into named intermediate variables.
+3. Handle missing values gracefully.
+4. Store the final answer in a variable called `result`.
+5. Return ONLY the corrected code block — no extra explanation.
+
+```python
+# Corrected code here
+```"""
+
+_MAX_RETRIES = 2
+
+
 def ask(
     df: pd.DataFrame,
     question: str,
@@ -287,6 +328,7 @@ def ask(
     temperature: float = 0.2,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
     df_name: str = DEFAULT_DF_NAME,
+    max_retries: int = _MAX_RETRIES,
 ) -> dict[str, Any]:
     """Answer a natural-language *question* about *df* using an LLM.
 
@@ -295,7 +337,9 @@ def ask(
         2. Send the prompt to the Ollama LLM.
         3. Extract Python code from the response.
         4. Execute the code in a sandboxed namespace.
-        5. Return the result alongside the generated code.
+        5. If execution fails, send the error back to the LLM and retry
+           (up to *max_retries* times).
+        6. Return the result alongside the generated code.
 
     Parameters
     ----------
@@ -313,6 +357,8 @@ def ask(
         Maximum seconds for code execution (default ``30``).
     df_name : str
         Variable name injected into the exec namespace (default ``"df"``).
+    max_retries : int
+        Number of times to retry with error feedback (default ``2``).
 
     Returns
     -------
@@ -323,6 +369,7 @@ def ask(
             ``result``    – execution output (the value of ``result``).
             ``success``   – ``True`` if everything worked.
             ``error``     – error message string, or ``None``.
+            ``retries``   – number of retries attempted (``0`` if first try worked).
 
     Raises
     ------
@@ -340,20 +387,21 @@ def ask(
     summary = _quick_summary(df)
     prompt = nl_to_pandas_prompt(summary, question, dataframe_name=df_name)
 
-    # ---- call LLM ----------------------------------------------------------
+    # ---- call LLM (priority: Groq → Gemini → Ollama) -----------------------
     logger.info("Sending question to LLM: %s", question)
+    fallback_warning = None
+    backend_used = None
+    model_used = None
     try:
-        client = OllamaClient(
-            model=model,
-            host=host,
-            system_prompt=(
-                "You are a Python data-analysis expert. "
-                "Return ONLY executable Python code in a fenced code block. "
-                "Always store the final answer in a variable called `result`."
-            ),
+        llm_response, meta = get_llm_response(
+            prompt,
+            system_prompt=_SYSTEM_PROMPT,
             temperature=temperature,
+            host=host,
         )
-        llm_response = client.query(prompt)
+        fallback_warning = meta.get("fallback_warning")
+        backend_used = meta.get("backend_used")
+        model_used = meta.get("model_used")
     except Exception as exc:
         return {
             "question": question,
@@ -361,6 +409,10 @@ def ask(
             "result": None,
             "success": False,
             "error": f"LLM error: {exc}",
+            "retries": 0,
+            "fallback_warning": None,
+            "backend_used": None,
+            "model_used": None,
         }
 
     # ---- extract code ------------------------------------------------------
@@ -373,28 +425,88 @@ def ask(
             "result": None,
             "success": False,
             "error": str(exc),
+            "retries": 0,
+            "fallback_warning": fallback_warning,
+            "backend_used": backend_used,
+            "model_used": model_used,
         }
 
-    # ---- execute code ------------------------------------------------------
-    logger.info("Executing generated code:\n%s", code)
-    try:
-        result = _execute_code(code, df, df_name, timeout)
-    except (CodeExecutionError, ExecutionTimeoutError) as exc:
+    # ---- execute with retry loop -------------------------------------------
+    last_error: str | None = None
+    retries_used = 0
+
+    for attempt in range(1 + max_retries):
+        logger.info(
+            "Executing generated code (attempt %d/%d):\n%s",
+            attempt + 1, 1 + max_retries, code,
+        )
+        try:
+            result = _execute_code(code, df, df_name, timeout)
+        except (CodeExecutionError, ExecutionTimeoutError) as exc:
+            last_error = str(exc)
+            logger.warning(
+                "Code execution failed (attempt %d): %s", attempt + 1, last_error,
+            )
+
+            # If we have retries left, ask the LLM to fix the code
+            if attempt < max_retries:
+                retries_used += 1
+                fix_prompt = _CODE_FIX_PROMPT.format(
+                    question=question.strip(),
+                    code=code,
+                    error=last_error,
+                )
+                try:
+                    fix_resp, _ = get_llm_response(
+                        fix_prompt,
+                        system_prompt=_SYSTEM_PROMPT,
+                        temperature=temperature,
+                        max_tokens=300,
+                        host=host,
+                    )
+                    code = extract_code(fix_resp)
+                    continue  # retry with fixed code
+                except Exception as fix_exc:
+                    logger.warning("Retry LLM call failed: %s", fix_exc)
+                    # Fall through to return the error
+
+            return {
+                "question": question,
+                "code": code,
+                "result": None,
+                "success": False,
+                "error": last_error,
+                "retries": retries_used,
+                "fallback_warning": fallback_warning,
+                "backend_used": backend_used,
+                "model_used": model_used,
+            }
+
+        # Execution succeeded
+        logger.info("Query answered successfully (after %d retries).", retries_used)
         return {
             "question": question,
             "code": code,
-            "result": None,
-            "success": False,
-            "error": str(exc),
+            "result": result,
+            "success": True,
+            "error": None,
+            "retries": retries_used,
+            "fallback_warning": fallback_warning,
+            "backend_used": backend_used,
+            "model_used": model_used,
         }
 
-    logger.info("Query answered successfully.")
+    # Should never reach here, but just in case
     return {
         "question": question,
         "code": code,
-        "result": result,
-        "success": True,
-        "error": None,
+        "result": None,
+        "success": False,
+        "error": last_error or "Unknown error",
+        "retries": retries_used,
+        "fallback_warning": fallback_warning,
+        "backend_used": backend_used,
+        "model_used": model_used,
     }
 
 

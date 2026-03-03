@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from modules.report_gen import generate_report
+from modules.report_gen import (
+    _build_conclusion_prompt,
+    _build_insights_prompt,
+    _fmt,
+    _render_correlation_heatmap,
+    _render_distribution_chart,
+    _title_case,
+    generate_report,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +87,12 @@ def full_report_data() -> dict:
                     },
                 },
             },
+            "correlation_matrix": {
+                "matrix": {
+                    "Quantity": {"Quantity": 1.0, "Revenue": 0.82},
+                    "Revenue": {"Quantity": 0.82, "Revenue": 1.0},
+                },
+            },
             "key_findings": [
                 "Revenue is right-skewed with a long tail.",
                 "West region has the highest sales volume.",
@@ -112,11 +127,22 @@ def full_report_data() -> dict:
             "The Q4 sales dataset reveals strong performance across all regions, "
             "with the West region leading in both volume and revenue.\n\n"
             "Revenue distribution is right-skewed, indicating a few high-value "
-            "transactions that could be worth investigating for upselling "
-            "opportunities.\n\n"
-            "The Random Forest model achieved the best prediction accuracy with "
-            "an R² score of 0.92, suggesting that the features strongly explain "
-            "revenue variation."
+            "transactions that could be worth investigating."
+        ),
+        # Pre-provide AI sections to avoid needing a live Ollama server
+        "ai_insights": (
+            "The dataset contains 5,000 records with an average revenue of "
+            "$4,500 per transaction. Revenue shows high variability (std=$2,100) "
+            "and a right-skewed distribution. There are 23 missing values, "
+            "mostly in Revenue and Profit columns."
+        ),
+        "conclusion": (
+            "The analysis reveals a healthy sales pipeline with strong "
+            "correlation between quantity and revenue. The Random Forest "
+            "model achieved the best predictive accuracy.\n\n"
+            "Recommended next steps: investigate the 42 outlier rows for "
+            "data quality issues, address missing values in Revenue/Profit, "
+            "and deploy the Random Forest model for revenue forecasting."
         ),
     }
 
@@ -132,7 +158,7 @@ def output_pdf(tmp_path: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# Tests – Report generation
 # ---------------------------------------------------------------------------
 class TestGenerateReport:
     def test_creates_pdf(self, full_report_data, output_pdf):
@@ -167,6 +193,7 @@ class TestGenerateReport:
     def test_only_eda(self, output_pdf):
         data = {
             "title": "EDA Only",
+            "ai_insights": "Test insight.",
             "eda_summary": {
                 "descriptive_stats": {
                     "X": {"count": 10, "mean": 5.0, "std": 2.0, "min": 1, "max": 10}
@@ -209,7 +236,173 @@ class TestGenerateReport:
         path = generate_report(data, output_pdf)
         assert Path(path).exists()
 
+    def test_full_report_bigger_than_minimal(
+        self, full_report_data, minimal_report_data, tmp_path
+    ):
+        p_full = tmp_path / "full.pdf"
+        p_min = tmp_path / "minimal.pdf"
+        generate_report(full_report_data, p_full)
+        generate_report(minimal_report_data, p_min)
+        assert p_full.stat().st_size > p_min.stat().st_size
 
+
+# ---------------------------------------------------------------------------
+# Tests – New sections
+# ---------------------------------------------------------------------------
+class TestAIInsights:
+    def test_pre_provided_insights(self, output_pdf):
+        data = {
+            "title": "Insight Test",
+            "ai_insights": "Revenue is growing steadily.",
+            "eda_summary": {
+                "descriptive_stats": {
+                    "X": {"count": 10, "mean": 5.0, "std": 2.0, "min": 1, "max": 10}
+                },
+            },
+        }
+        path = generate_report(data, output_pdf)
+        assert Path(path).exists()
+
+    def test_fallback_when_ollama_unavailable(self, output_pdf):
+        data = {
+            "title": "No Ollama",
+            "eda_summary": {
+                "descriptive_stats": {
+                    "X": {"count": 10, "mean": 5.0, "std": 2.0, "min": 1, "max": 10}
+                },
+            },
+        }
+        # No ai_insights key and Ollama isn't running → should still build
+        with patch(
+            "modules.report_gen._generate_ai_text", return_value=None
+        ):
+            path = generate_report(data, output_pdf)
+        assert Path(path).exists()
+
+
+class TestConclusion:
+    def test_pre_provided_conclusion(self, output_pdf):
+        data = {
+            "title": "Conclusion Test",
+            "ai_summary": "Test summary.",
+            "conclusion": "Key finding.\n\nNext step: deploy.",
+        }
+        path = generate_report(data, output_pdf)
+        assert Path(path).exists()
+
+    def test_fallback_when_ollama_unavailable(self, output_pdf):
+        data = {
+            "title": "No Ollama",
+            "ai_summary": "Some analysis.",
+        }
+        with patch(
+            "modules.report_gen._generate_ai_text", return_value=None
+        ):
+            path = generate_report(data, output_pdf)
+        assert Path(path).exists()
+
+
+class TestVisualizations:
+    def test_heatmap_generated(self):
+        eda = {
+            "correlation_matrix": {
+                "matrix": {
+                    "A": {"A": 1.0, "B": 0.5},
+                    "B": {"A": 0.5, "B": 1.0},
+                }
+            }
+        }
+        result = _render_correlation_heatmap(eda)
+        assert result is not None
+        assert result[:8] == b"\x89PNG\r\n\x1a\n"  # PNG magic bytes
+
+    def test_heatmap_returns_none_for_single_col(self):
+        eda = {
+            "correlation_matrix": {
+                "matrix": {"A": {"A": 1.0}}
+            }
+        }
+        assert _render_correlation_heatmap(eda) is None
+
+    def test_heatmap_returns_none_for_missing_data(self):
+        assert _render_correlation_heatmap({}) is None
+
+    def test_distribution_chart_generated(self):
+        eda = {
+            "descriptive_stats": {
+                "X": {"count": 10, "mean": 5.0, "std": 2.0, "min": 1, "max": 10},
+                "Y": {"count": 10, "mean": 3.0, "std": 1.5, "min": 0, "max": 8},
+            }
+        }
+        result = _render_distribution_chart(eda)
+        assert result is not None
+        assert result[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_distribution_returns_none_for_no_numeric(self):
+        eda = {
+            "descriptive_stats": {
+                "Cat": {"count": 10, "unique": 3, "top": "A", "freq": 5}
+            }
+        }
+        assert _render_distribution_chart(eda) is None
+
+    def test_charts_embedded_in_pdf(self, full_report_data, output_pdf):
+        path = generate_report(full_report_data, output_pdf)
+        # Full data has correlation matrix → PDF should be larger
+        assert output_pdf.stat().st_size > 5000
+
+
+# ---------------------------------------------------------------------------
+# Tests – Prompt builders
+# ---------------------------------------------------------------------------
+class TestPromptBuilders:
+    def test_insights_prompt_has_stats(self):
+        eda = {
+            "descriptive_stats": {
+                "Price": {"count": 100, "mean": 50.0, "std": 10.0, "min": 5, "max": 99}
+            },
+            "missing_values": {"total_missing": 5, "columns": {}},
+            "outliers": {"total_outlier_rows": 3},
+        }
+        prompt = _build_insights_prompt(eda)
+        assert "Price" in prompt
+        assert "mean=" in prompt
+
+    def test_conclusion_prompt_includes_context(self):
+        data = {
+            "eda_summary": {"key_findings": ["Revenue growing"]},
+            "ml_comparison": {"best_model": "RF"},
+            "ai_summary": "Good results.",
+        }
+        prompt = _build_conclusion_prompt(data)
+        assert "Revenue growing" in prompt
+        assert "RF" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Tests – Helpers
+# ---------------------------------------------------------------------------
+class TestHelpers:
+    def test_fmt_none(self):
+        assert _fmt(None) == "N/A"
+
+    def test_fmt_small_float(self):
+        assert _fmt(0.1234) == "0.1234"
+
+    def test_fmt_large_float(self):
+        assert _fmt(1234.5678) == "1,234.57"
+
+    def test_fmt_int(self):
+        assert _fmt(42) == "42"
+
+    def test_title_case(self):
+        assert _title_case("f1_score") == "F1 Score"
+        assert _title_case("accuracy") == "Accuracy"
+
+
+# ---------------------------------------------------------------------------
+# Tests – Validation
+# ---------------------------------------------------------------------------
 class TestValidation:
     def test_none_raises(self):
         with pytest.raises(ValueError, match="dict"):

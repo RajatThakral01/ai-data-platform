@@ -156,6 +156,7 @@ def _classification_models(random_state: int) -> dict[str, Pipeline]:
             ("scaler", StandardScaler()),
             ("model", LogisticRegression(
                 max_iter=1000, random_state=random_state, n_jobs=-1,
+                class_weight="balanced",
             )),
         ]),
         "Random Forest": Pipeline([
@@ -165,7 +166,10 @@ def _classification_models(random_state: int) -> dict[str, Pipeline]:
         ]),
         "SVM": Pipeline([
             ("scaler", StandardScaler()),
-            ("model", SVC(kernel="rbf", random_state=random_state)),
+            ("model", SVC(
+                kernel="rbf", random_state=random_state,
+                class_weight="balanced",
+            )),
         ]),
         "KNN": Pipeline([
             ("scaler", StandardScaler()),

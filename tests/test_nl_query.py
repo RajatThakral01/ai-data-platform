@@ -141,17 +141,18 @@ class TestExecuteGeneratedCode:
 # ask (end-to-end with mocked LLM)
 # ---------------------------------------------------------------------------
 class TestAsk:
-    def _mock_ollama(self, response_text: str):
-        """Return a patcher that replaces OllamaClient in nl_query's namespace."""
-        patcher = patch("modules.nl_query.OllamaClient")
-        mock_cls = patcher.start()
-        instance = MagicMock()
-        instance.query.return_value = response_text
-        mock_cls.return_value = instance
-        return patcher, instance
+    def _mock_llm(self, response_text: str):
+        """Return a patcher that replaces get_llm_response in nl_query's namespace."""
+        patcher = patch("modules.nl_query.get_llm_response")
+        mock_router = patcher.start()
+        mock_router.return_value = (
+            response_text,
+            {"backend_used": "groq", "model_used": "llama-3.3-70b-versatile", "fallback_warning": None},
+        )
+        return patcher, mock_router
 
     def test_success(self, sample_df: pd.DataFrame):
-        patcher, _ = self._mock_ollama(
+        patcher, _ = self._mock_llm(
             "```python\nresult = df['Salary'].max()\n```"
         )
         try:
@@ -164,9 +165,9 @@ class TestAsk:
             patcher.stop()
 
     def test_llm_failure(self, sample_df: pd.DataFrame):
-        patcher = patch("modules.nl_query.OllamaClient")
-        mock_cls = patcher.start()
-        mock_cls.side_effect = ConnectionError("server down")
+        patcher = patch("modules.nl_query.get_llm_response")
+        mock_router = patcher.start()
+        mock_router.side_effect = RuntimeError("both backends failed")
         try:
             out = ask(sample_df, "Count rows")
             assert out["success"] is False
@@ -175,7 +176,7 @@ class TestAsk:
             patcher.stop()
 
     def test_bad_code_from_llm(self, sample_df: pd.DataFrame):
-        patcher, _ = self._mock_ollama(
+        patcher, _ = self._mock_llm(
             "```python\nresult = df['NOPE'].sum()\n```"
         )
         try:

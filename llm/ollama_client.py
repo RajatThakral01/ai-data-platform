@@ -123,6 +123,7 @@ class OllamaClient:
         *,
         system_prompt: str | None = None,
         temperature: float | None = None,
+        max_tokens: int | None = None,
         **kwargs: Any,
     ) -> str:
         """Send *prompt* to the model and return the response text.
@@ -135,6 +136,8 @@ class OllamaClient:
             Override the instance-level system prompt for this call.
         temperature : float | None
             Override the instance-level temperature for this call.
+        max_tokens : int | None
+            Maximum tokens in the response (passed as num_predict).
         **kwargs
             Extra keyword arguments forwarded to ``ollama.Client.chat``.
 
@@ -165,11 +168,15 @@ class OllamaClient:
 
         logger.info("Querying model='%s' (temp=%.2f) …", self.model, temp)
 
+        options: dict[str, Any] = {"temperature": temp}
+        if max_tokens is not None:
+            options["num_predict"] = max_tokens
+
         try:
             response = self._client.chat(
                 model=self.model,
                 messages=messages,
-                options={"temperature": temp},
+                options=options,
                 **kwargs,
             )
         except RequestError as exc:

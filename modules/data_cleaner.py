@@ -215,18 +215,73 @@ def build_before_after_summary(
 # ---------------------------------------------------------------------------
 # AI Cleaning Suggestions
 # ---------------------------------------------------------------------------
-def get_ai_cleaning_suggestions(
-    eda_summary: dict[str, Any],
-) -> str | None:
-    """Ask the LLM for cleaning recommendations based on the EDA summary.
+def _build_summary_from_df(df: pd.DataFrame) -> dict[str, Any]:
+    """Build a minimal EDA-like summary dict directly from a DataFrame.
 
-    Uses 8b model (simple task) with 300-token cap.
-    Returns the suggestion text or ``None`` on failure.
+    This allows AI suggestions to work even when Smart EDA hasn't been run.
+    """
+    desc_stats: dict[str, dict] = {}
+    mv_cols: dict[str, dict] = {}
+
+    for col in df.columns:
+        series = df[col]
+        missing_count = int(series.isna().sum())
+        missing_pct = round(missing_count / len(df) * 100, 2) if len(df) else 0
+        mv_cols[col] = {"count": missing_count, "percentage": missing_pct}
+
+        if pd.api.types.is_numeric_dtype(series):
+            clean = series.dropna()
+            desc_stats[col] = {
+                "count": int(clean.count()),
+                "mean": float(clean.mean()) if len(clean) else 0,
+                "std": float(clean.std()) if len(clean) > 1 else 0,
+                "min": float(clean.min()) if len(clean) else 0,
+                "max": float(clean.max()) if len(clean) else 0,
+            }
+        else:
+            desc_stats[col] = {
+                "count": int(series.count()),
+                "unique": int(series.nunique()),
+                "top": str(series.mode().iloc[0]) if not series.mode().empty else "?",
+            }
+
+    return {
+        "descriptive_stats": desc_stats,
+        "missing_values": {
+            "total_missing": int(df.isna().sum().sum()),
+            "columns": mv_cols,
+        },
+        "correlation_matrix": {"matrix": {}},
+        "outliers": {"total_outlier_rows": 0},
+    }
+
+
+def get_ai_cleaning_suggestions(
+    df: pd.DataFrame,
+    eda_summary: dict[str, Any] | None = None,
+) -> tuple[str | None, str | None]:
+    """Ask the LLM for cleaning recommendations.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The raw DataFrame (used to build stats if no EDA summary available).
+    eda_summary : dict | None
+        Pre-computed EDA summary.  If ``None``, stats are computed from *df*.
+
+    Returns
+    -------
+    tuple[str | None, str | None]
+        ``(suggestion_text, error_message)``
+        — On success: ``("suggestions...", None)``
+        — On failure: ``(None, "Groq: quota exceeded; Gemini: no key; ...")``
     """
     from llm.client_factory import get_llm_response, GROQ_MODEL_SMALL
     from llm.prompts import _compact_summary
 
-    data = _compact_summary(eda_summary)
+    # Use EDA summary if available, otherwise compute from DataFrame
+    summary = eda_summary if eda_summary else _build_summary_from_df(df)
+    data = _compact_summary(summary)
 
     prompt = (
         "Role: data analyst. Given this EDA summary, list cleaning recommendations.\n"
@@ -243,8 +298,104 @@ def get_ai_cleaning_suggestions(
             max_tokens=300,
             groq_model=GROQ_MODEL_SMALL,
         )
-        return text
+        return text, None
+    except RuntimeError as exc:
+        # RuntimeError from client_factory means ALL backends failed
+        logger.warning("AI cleaning suggestions – all backends failed: %s", exc)
+        return None, str(exc)
     except Exception as exc:
         logger.warning("AI cleaning suggestions failed: %s", exc)
-        return None
+        return None, f"Unexpected error: {exc}"
 
+
+
+# ---------------------------------------------------------------------------
+# Auto Clean
+# ---------------------------------------------------------------------------
+def auto_clean_data(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Automatically clean the DataFrame for ML processing.
+
+    Returns the cleaned DataFrame and a report dictionary detailing all steps.
+    """
+    cleaned = df.copy()
+    report: dict[str, Any] = {}
+
+    # 1. Drop unique identifiers
+    id_cols = [col for col in cleaned.columns if (cleaned[col].nunique() == len(cleaned)) and (len(cleaned) > 0)]
+    if id_cols:
+        cleaned.drop(columns=id_cols, inplace=True)
+        report["dropped_id_cols"] = id_cols
+
+    # 2. Drop geographical columns
+    geo_keywords = ['lat', 'long', 'zip', 'country', 'state', 'city', 'latitude', 'longitude', 'postal']
+    geo_cols = [col for col in cleaned.columns if any(k in str(col).lower() for k in geo_keywords)]
+    geo_cols = list(set(geo_cols))
+    if geo_cols:
+        cleaned.drop(columns=geo_cols, inplace=True)
+        report["dropped_geo_cols"] = geo_cols
+
+    # 3. Drop columns with > 70% missing
+    threshold = 0.7 * len(cleaned)
+    high_missing_cols = [col for col in cleaned.columns if cleaned[col].isna().sum() > threshold]
+    if high_missing_cols:
+        cleaned.drop(columns=high_missing_cols, inplace=True)
+        report["dropped_missing_cols"] = high_missing_cols
+
+    # 4. Fill missing: median for numeric, mode for categorical
+    filled_missing = {}
+    for col in cleaned.columns:
+        missing_count = int(cleaned[col].isna().sum())
+        if missing_count > 0:
+            if pd.api.types.is_numeric_dtype(cleaned[col]):
+                val = float(cleaned[col].median()) if pd.notna(cleaned[col].median()) else 0.0
+                strategy = "median"
+            else:
+                mode_val = cleaned[col].mode()
+                val = mode_val.iloc[0] if not mode_val.empty else "Unknown"
+                strategy = "mode"
+            cleaned[col] = cleaned[col].fillna(val)
+            filled_missing[col] = {"count": missing_count, "strategy": strategy, "value": val}
+    if filled_missing:
+        report["filled_missing"] = filled_missing
+
+    # 5. Remove duplicates
+    dup_count = int(cleaned.duplicated().sum())
+    if dup_count > 0:
+        cleaned.drop_duplicates(inplace=True)
+        cleaned.reset_index(drop=True, inplace=True)
+        report["removed_duplicates"] = dup_count
+
+    # 6. Cap outliers using IQR on all numeric
+    capped_outliers = {}
+    num_cols = cleaned.select_dtypes(include="number").columns
+    for col in num_cols:
+        q1 = cleaned[col].quantile(0.25)
+        q3 = cleaned[col].quantile(0.75)
+        iqr = q3 - q1
+        lower = q1 - 1.5 * iqr
+        upper = q3 + 1.5 * iqr
+
+        outliers_mask = (cleaned[col] < lower) | (cleaned[col] > upper)
+        outliers_count = int(outliers_mask.sum())
+        if outliers_count > 0:
+            cleaned[col] = cleaned[col].clip(lower=lower, upper=upper)
+            capped_outliers[col] = outliers_count
+    if capped_outliers:
+        report["capped_outliers"] = capped_outliers
+
+    # 7. Label Encoding for categorical columns
+    encoded_cols = []
+    try:
+        from sklearn.preprocessing import LabelEncoder
+        for col in cleaned.select_dtypes(include=['object', 'category']).columns:
+            le = LabelEncoder()
+            cleaned[col] = le.fit_transform(cleaned[col].astype(str))
+            encoded_cols.append(col)
+    except ImportError:
+        for col in cleaned.select_dtypes(include=['object', 'category']).columns:
+            cleaned[col] = pd.factorize(cleaned[col])[0]
+            encoded_cols.append(col)
+    if encoded_cols:
+        report["encoded_cols"] = encoded_cols
+
+    return cleaned, report

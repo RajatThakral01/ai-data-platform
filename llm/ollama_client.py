@@ -20,10 +20,21 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import Any
 
 import ollama
 from ollama import RequestError, ResponseError
+
+# Load .env from project root before reading env vars
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_DOTENV_PATH = _PROJECT_ROOT / ".env"
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_DOTENV_PATH, override=True) if _DOTENV_PATH.exists() else load_dotenv()
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 

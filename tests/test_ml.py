@@ -111,7 +111,8 @@ class TestClassification:
         expected = {
             "task_type", "target_column", "test_size",
             "train_samples", "test_samples", "class_labels",
-            "results", "best_model",
+            "results", "best_model", "skipped_models",
+            "leakage_warnings",
         }
         assert result.keys() == expected
 

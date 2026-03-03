@@ -120,6 +120,15 @@ def _prepare_data(
     task_type = detect_task_type(y)
     logger.info("Detected task type: %s", task_type)
 
+    # Validate that the target has at least 2 unique classes
+    n_classes = y.nunique()
+    if task_type == "classification" and n_classes < 2:
+        raise ValueError(
+            f"Target column '{target_column}' has only {n_classes} class. "
+            "Please check your data cleaning steps — you may have "
+            "accidentally removed one class."
+        )
+
     # Encode target for classification if needed
     label_enc: LabelEncoder | None = None
     if task_type == "classification" and y.dtype.kind in ("O", "b"):
@@ -304,6 +313,27 @@ def run_ml(
         df, target_column, test_size, random_state,
     )
 
+    # ---- data leakage check ------------------------------------------------
+    leakage_warnings: list[str] = []
+    try:
+        # Check for features suspiciously correlated with the target
+        if np.issubdtype(y_train.dtype, np.number):
+            for i in range(X_train.shape[1]):
+                col_data = X_train[:, i]
+                if np.std(col_data) > 0 and np.std(y_train) > 0:
+                    r = np.corrcoef(col_data, y_train)[0, 1]
+                    if abs(r) > 0.95:
+                        leakage_warnings.append(
+                            f"Feature column index {i} has |r|={abs(r):.3f} "
+                            f"with target — possible data leakage."
+                        )
+        if leakage_warnings:
+            logger.warning(
+                "Potential data leakage detected: %s", leakage_warnings
+            )
+    except Exception:
+        pass  # Non-critical; don't block training
+
     # ---- select models -----------------------------------------------------
     if task_type == "classification":
         all_models = _classification_models(random_state)
@@ -325,6 +355,7 @@ def run_ml(
 
     # ---- train & evaluate --------------------------------------------------
     results: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
     for name, pipeline in all_models.items():
         logger.info("Training %s …", name)
         with warnings.catch_warnings():
@@ -336,12 +367,8 @@ def run_ml(
                 results.append({"model": name, "metrics": metrics})
                 logger.info("  → %s", metrics)
             except Exception as exc:
-                logger.warning("Model '%s' failed: %s", name, exc)
-                results.append({
-                    "model": name,
-                    "metrics": {},
-                    "error": str(exc),
-                })
+                logger.warning("Model '%s' failed — skipping: %s", name, exc)
+                skipped.append({"model": name, "error": str(exc)})
 
     # ---- rank by primary metric -------------------------------------------
     scored = [
@@ -352,12 +379,7 @@ def run_ml(
     scored.sort(key=lambda r: r["metrics"][rank_metric], reverse=True)
 
     for rank, entry in enumerate(scored, start=1):
-        entry["rank"] = rank
-
-    # Mark failed models as unranked
-    for r in results:
-        if "rank" not in r:
-            r["rank"] = None
+        entry["rank"] = int(rank)
 
     best = scored[0]["model"] if scored else None
 
@@ -378,4 +400,6 @@ def run_ml(
         "class_labels": class_labels,
         "results": results,
         "best_model": best,
+        "skipped_models": skipped,
+        "leakage_warnings": leakage_warnings,
     }

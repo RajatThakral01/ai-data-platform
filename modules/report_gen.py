@@ -35,6 +35,7 @@ import io
 import logging
 import os
 import textwrap
+import base64
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -338,9 +339,14 @@ def _generate_ai_text(
 
 
 def _build_insights_prompt(eda: dict[str, Any]) -> str:
-    """Build a compressed prompt requesting 3-4 sentence narrative insights."""
+    """Build a compressed prompt requesting 3-4 sentence narrative insights.
+
+    Filters out irrelevant columns (IDs, geo, counts) before sending to LLM.
+    """
     from llm.prompts import _compact_summary
-    data = _compact_summary(eda)
+    # Filter EDA to exclude irrelevant columns
+    filtered = _filter_eda_columns(eda)
+    data = _compact_summary(filtered)
     return (
         "Role: data analyst. Write 3-4 sentences of plain English insights. "
         "Be specific with numbers. No bullet points or headings.\n\n"
@@ -351,7 +357,10 @@ def _build_insights_prompt(eda: dict[str, Any]) -> str:
 def _build_conclusion_prompt(
     data: dict[str, Any],
 ) -> str:
-    """Build a prompt for the conclusion & next-steps section."""
+    """Build a prompt for the conclusion & next-steps section.
+
+    Includes actual ML model accuracy scores so the LLM doesn't invent numbers.
+    """
     parts: list[str] = []
 
     eda = data.get("eda_summary", {})
@@ -363,6 +372,20 @@ def _build_conclusion_prompt(
     best = ml.get("best_model")
     if best:
         parts.append(f"Best ML model: {best}")
+
+    # Include actual model scores
+    ml_results = ml.get("results", [])
+    if ml_results:
+        score_lines: list[str] = []
+        for entry in ml_results:
+            name = entry.get("model", "?")
+            metrics = entry.get("metrics", {})
+            rank = entry.get("rank", "?")
+            metric_strs = [f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}"
+                           for k, v in metrics.items()]
+            score_lines.append(f"  #{rank} {name}: {', '.join(metric_strs)}")
+        parts.append("Model scores (EXACT — use these numbers, do not invent):\n"
+                     + "\n".join(score_lines))
 
     ai_summary = data.get("ai_summary", "")
     if ai_summary:
@@ -381,6 +404,8 @@ def _build_conclusion_prompt(
         "Paragraph 2:" or "Summary:" or "Next Steps:". Just write clean,
         flowing prose. Be professional, concise, and specific. No bullet points.
         Separate the two paragraphs with a blank line.
+
+        Use only these exact scores from the results, do not invent numbers.
 
         Analysis context:
         {context}
@@ -445,11 +470,12 @@ def _render_correlation_heatmap(eda: dict[str, Any]) -> bytes | None:
         return None
 
 
-# Column name patterns to exclude from distribution charts
+# Column name patterns to exclude from distribution charts and LLM prompts
 _EXCLUDED_COL_PATTERNS = {
     "zip", "zipcode", "zip_code", "zip code",
     "latitude", "lat", "longitude", "lon", "lng",
-    "count", "index",
+    "lat long", "count", "index",
+    "customerid", "customer_id", "customer id",
 }
 _EXCLUDED_COL_SUFFIXES = ("_id", " id", "id")
 
@@ -466,10 +492,33 @@ def _is_irrelevant_column(col_name: str) -> bool:
     return False
 
 
+def _filter_eda_columns(eda: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of the EDA summary with irrelevant columns removed."""
+    filtered = {}
+    for key, value in eda.items():
+        if key == "descriptive_stats" and isinstance(value, dict):
+            filtered[key] = {
+                c: s for c, s in value.items() if not _is_irrelevant_column(c)
+            }
+        elif key == "missing_values" and isinstance(value, dict):
+            mv_copy = dict(value)
+            cols = mv_copy.get("columns", {})
+            if isinstance(cols, dict):
+                mv_copy["columns"] = {
+                    c: s for c, s in cols.items() if not _is_irrelevant_column(c)
+                }
+            filtered[key] = mv_copy
+        else:
+            filtered[key] = value
+    return filtered
+
+
 def _render_distribution_chart(eda: dict[str, Any]) -> bytes | None:
-    """Render a mini distribution overview for numeric columns (bar chart).
+    """Render a normalized distribution overview for numeric columns (bar chart).
 
     Excludes irrelevant columns like IDs, zip codes, and geo-coordinates.
+    Normalizes values (min-max) so high-magnitude columns like CLTV don't
+    dominate the chart.
     Returns ``None`` if no meaningful numeric stats exist.
     """
     desc = eda.get("descriptive_stats", {})
@@ -489,20 +538,27 @@ def _render_distribution_chart(eda: dict[str, Any]) -> bytes | None:
         means = [numeric[c].get("mean", 0) for c in cols]
         stds = [numeric[c].get("std", 0) for c in cols]
 
+        # Min-max normalize so CLTV doesn't dominate
+        max_val = max(abs(m) for m in means) if means else 1
+        if max_val == 0:
+            max_val = 1
+        norm_means = [m / max_val for m in means]
+        norm_stds = [s / max_val for s in stds]
+
         fig, ax = plt.subplots(figsize=(6, 3.5), dpi=150)
 
         x = range(len(cols))
         bar_colors = ["#3949ab", "#5c6bc0", "#7986cb", "#9fa8da",
                        "#3949ab", "#5c6bc0", "#7986cb", "#9fa8da"]
-        ax.bar(x, means, color=bar_colors[:len(cols)], alpha=0.85,
+        ax.bar(x, norm_means, color=bar_colors[:len(cols)], alpha=0.85,
                edgecolor="white", linewidth=0.5)
-        ax.errorbar(x, means, yerr=stds, fmt="none", ecolor="#424242",
+        ax.errorbar(x, norm_means, yerr=norm_stds, fmt="none", ecolor="#424242",
                      capsize=3, linewidth=1)
 
         ax.set_xticks(x)
         ax.set_xticklabels(cols, fontsize=8, rotation=30, ha="right")
-        ax.set_ylabel("Mean ± Std", fontsize=9)
-        ax.set_title("Numeric Column Distributions", fontsize=11,
+        ax.set_ylabel("Normalized (0–1)", fontsize=9)
+        ax.set_title("Numeric Column Distributions (normalized)", fontsize=11,
                       fontweight="bold", color="#1a237e", pad=12)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
@@ -792,13 +848,15 @@ def _build_visualizations(
 ) -> list:
     """Build the Visualizations section with embedded charts."""
     eda = data.get("eda_summary")
-    if not eda:
+    viz_charts = data.get("viz_charts", {})
+    
+    if not eda and not viz_charts:
         return []
 
-    heatmap_bytes = _render_correlation_heatmap(eda)
-    dist_bytes = _render_distribution_chart(eda)
+    heatmap_bytes = _render_correlation_heatmap(eda) if eda else None
+    dist_bytes = _render_distribution_chart(eda) if eda else None
 
-    if not heatmap_bytes and not dist_bytes:
+    if not heatmap_bytes and not dist_bytes and not viz_charts:
         return []
 
     elements: list = []
@@ -806,6 +864,26 @@ def _build_visualizations(
         Paragraph(f"{section}. Visualizations", styles["section_heading"])
     )
     elements.append(_section_divider())
+    
+    import plotly.io as pio
+    for title, json_str in viz_charts.items():
+        try:
+            head_title = _title_case(title) + " Chart"
+            heading = Paragraph(head_title, styles["sub_heading"])
+            
+            fig = pio.from_json(json_str)
+            buf = io.BytesIO()
+            fig.write_image(buf, format="png", width=800, height=600)
+            buf.seek(0)
+            
+            img = Image(buf)
+            img_w = _PAGE_W - 5 * cm
+            img.drawWidth = img_w
+            img.drawHeight = img_w * 0.75
+            elements.append(KeepTogether([heading, img]))
+            elements.append(Spacer(1, 0.5 * cm))
+        except Exception as e:
+            logger.warning("Failed to add viz_chart %s: %s", title, e)
 
     if heatmap_bytes:
         heading = Paragraph("Correlation Heatmap", styles["sub_heading"])

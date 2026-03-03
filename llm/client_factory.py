@@ -25,16 +25,16 @@ Usage:
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Force load .env from project root
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
+
 import logging
 import os
 from typing import Any
-
-# Load .env if python-dotenv is available
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
 
 logger = logging.getLogger(__name__)
 

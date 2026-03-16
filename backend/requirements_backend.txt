@@ -2,4 +2,14 @@ fastapi
 uvicorn[standard]
 python-multipart
 pandas
+numpy
 openpyxl
+xlrd
+scikit-learn
+fpdf2
+python-dotenv
+sentence-transformers
+chromadb
+groq
+google-generativeai
+redis>=4.0.0

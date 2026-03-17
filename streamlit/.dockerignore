@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+chroma_db/
+llm_logs.db
+.pytest_cache/
+*.csv
+*.xlsx
+*.xls

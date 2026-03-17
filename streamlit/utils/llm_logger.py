@@ -111,8 +111,20 @@ def log_call(
     except Exception as e:
         logger.warning(f"Failed to log LLM call: {e}")
 
-def get_all_logs(limit: int = 50) -> list[dict[str, Any]]:
+def get_all_logs(limit: int = 50) -> list[dict]:
     """Retrieve the most recent logs as a list of dictionaries."""
+    if _supabase_available:
+        supabase = get_supabase()
+        if supabase:
+            try:
+                result = supabase.table("llm_logs") \
+                    .select("*") \
+                    .order("created_at", desc=True) \
+                    .limit(limit) \
+                    .execute()
+                return result.data or []
+            except Exception as e:
+                print(f"Supabase read failed, falling back to SQLite: {e}")
     try:
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
@@ -126,8 +138,49 @@ def get_all_logs(limit: int = 50) -> list[dict[str, Any]]:
         logger.error(f"Failed to retrieve logs: {e}")
         return []
 
-def get_summary_stats() -> dict[str, Any]:
+def get_summary_stats() -> dict:
     """Calculate and return summary statistics from the logs."""
+    if _supabase_available:
+        supabase = get_supabase()
+        if supabase:
+            try:
+                result = supabase.table("llm_logs") \
+                    .select("*") \
+                    .execute()
+                logs = result.data or []
+                total = len(logs)
+                if total == 0:
+                    return {"total_calls": 0, "avg_latency_ms": 0,
+                            "success_rate": 0, "fallback_rate": 0,
+                            "calls_by_model": [], "calls_by_module": []}
+                avg_latency = sum(l.get("latency_ms", 0) or 0 for l in logs) / total
+                success_rate = sum(1 for l in logs if l.get("success")) / total * 100
+                fallback_rate = sum(1 for l in logs if l.get("fallback_used")) / total * 100
+
+                # Group by model
+                model_counts = {}
+                for l in logs:
+                    m = l.get("model_used", "unknown")
+                    model_counts[m] = model_counts.get(m, 0) + 1
+                calls_by_model = [{"model": k, "count": v} for k, v in model_counts.items()]
+
+                # Group by module
+                module_counts = {}
+                for l in logs:
+                    m = l.get("module_name", "unknown")
+                    module_counts[m] = module_counts.get(m, 0) + 1
+                calls_by_module = [{"module": k, "count": v} for k, v in module_counts.items()]
+
+                return {
+                    "total_calls": total,
+                    "avg_latency_ms": round(avg_latency, 2),
+                    "success_rate": round(success_rate, 2),
+                    "fallback_rate": round(fallback_rate, 2),
+                    "calls_by_model": calls_by_model,
+                    "calls_by_module": calls_by_module,
+                }
+            except Exception as e:
+                print(f"Supabase stats failed, falling back to SQLite: {e}")
     stats = {
         "total_calls": 0,
         "avg_latency_ms": 0.0,

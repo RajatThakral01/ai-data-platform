@@ -29,7 +29,10 @@ async def upload_file(file: UploadFile = File(...)):
         try:
             from rag.document_processor import process_and_index_dataframe
             # Using threading for a lightweight fire-and-forget
-            threading.Thread(target=process_and_index_dataframe, args=(df, file.filename)).start()
+            threading.Thread(
+                target=process_and_index_dataframe, 
+                args=(df, file.filename, session_id)
+            ).start()
         except ImportError:
             pass
             

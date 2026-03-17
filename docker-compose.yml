@@ -66,6 +66,8 @@ services:
     environment:
       - GROQ_API_KEY=${GROQ_API_KEY}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
     volumes:
       - chroma_data:/app/chroma_db
       - logs_data:/app/llm_logs.db

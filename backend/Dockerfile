@@ -9,11 +9,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python dependencies first (layer caching)
-COPY requirements_backend.txt .
+COPY backend/requirements_backend.txt .
 RUN pip install --no-cache-dir -r requirements_backend.txt
 
 # Copy backend source
-COPY . .
+COPY backend/ .
 
 EXPOSE 8000
 

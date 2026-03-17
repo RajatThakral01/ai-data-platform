@@ -108,14 +108,20 @@ export interface LogEntry {
   prompt_tokens: number;
   completion_tokens: number;
   total_cost_usd: number;
+  module_name?: string;
+  model_used?: string;
+  latency_ms?: number;
+  cost?: number;
+  fallback_used?: boolean;
 }
 
 export interface StatsResponse {
   total_calls: number;
-  success_rate: number;
-  avg_latency: number;
+  total_tokens: number;
+  total_cost: number;
+  avg_latency_ms: number;
+  calls_by_model: { model: string; count: number }[];
+  calls_by_module: { module: string; count: number }[];
   fallback_rate: number;
-  total_cost_usd: number;
-  calls_by_module: Record<string, number>;
-  latency_by_model: Record<string, number>;
+  success_rate: number;
 }

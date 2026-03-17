@@ -52,7 +52,23 @@ export default function ObservatoryPage() {
     );
   }
 
-  const moduleData = (stats?.calls_by_module ?? []).map((item, i) => ({ name: item.module, calls: item.count, fill: CHART_COLORS[i % CHART_COLORS.length] }));
+  const moduleData = (Array.isArray(stats?.calls_by_module) 
+    ? stats.calls_by_module 
+    : []
+  ).map((item, i) => ({ 
+    name: item.module, 
+    calls: item.count, 
+    fill: CHART_COLORS[i % CHART_COLORS.length] 
+  }));
+
+  const modelData = (Array.isArray(stats?.calls_by_model) 
+    ? stats.calls_by_model 
+    : []
+  ).map((item, i) => ({ 
+    name: item.model, 
+    calls: item.count, 
+    fill: CHART_COLORS[i % CHART_COLORS.length] 
+  }));
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500 pb-12">
@@ -82,7 +98,7 @@ export default function ObservatoryPage() {
             </div>
             <div className="data-card p-5">
               <div className="flex items-center gap-2 text-xs text-[var(--text-muted)] uppercase mb-2"><Clock className="w-3 h-3" /> Avg Latency</div>
-              <p className="text-2xl font-bold font-mono text-[var(--accent-purple)]">{stats?.avg_latency != null ? Number(stats.avg_latency).toFixed(0) : '—'}ms</p>
+              <p className="text-2xl font-bold font-mono text-[var(--accent-purple)]">{stats?.avg_latency_ms != null ? Number(stats.avg_latency_ms).toFixed(0) : '—'}ms</p>
             </div>
             <div className="data-card p-5">
               <div className="flex items-center gap-2 text-xs text-[var(--text-muted)] uppercase mb-2"><Activity className="w-3 h-3" /> Fallback Rate</div>

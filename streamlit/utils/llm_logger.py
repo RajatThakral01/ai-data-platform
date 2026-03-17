@@ -4,6 +4,15 @@ llm_logger.py - SQLite logger for LLM Observability.
 
 from __future__ import annotations
 
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'backend')))
+try:
+    from db.supabase_client import get_supabase
+    _supabase_available = True
+except ImportError:
+    _supabase_available = False
+
 import sqlite3
 import datetime
 import logging
@@ -66,6 +75,24 @@ def log_call(
         prompt_tokens = estimate_tokens(prompt)
         response_tokens = estimate_tokens(response)
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        if _supabase_available:
+            supabase = get_supabase()
+            if supabase:
+                try:
+                    supabase.table("llm_logs").insert({
+                        "module_name": module_name,
+                        "model_used": model_used,
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": response_tokens,
+                        "latency_ms": latency_ms,
+                        "success": success,
+                        "fallback_used": fallback_used,
+                        "cost": None,
+                    }).execute()
+                    return  # skip SQLite if Supabase succeeded
+                except Exception as e:
+                    print(f"Supabase log failed, falling back to SQLite: {e}")
         
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()

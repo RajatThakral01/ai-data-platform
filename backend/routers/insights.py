@@ -349,6 +349,8 @@ def run_insights(req: InsightsRequest):
 
     try:
         df = session["df"]
+        if isinstance(df, (list, dict)):
+            df = pd.DataFrame(df)
         meta = _get_dataset_metadata(df)
 
         # 1. Detect business context (standalone LLM call)

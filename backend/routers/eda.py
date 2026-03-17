@@ -141,6 +141,8 @@ def run_eda_analysis(req: EDARequest):
 
     try:
         df = session["df"]
+        if isinstance(df, (list, dict)):
+            df = pd.DataFrame(df)
 
         stats = _compute_stats(df)
         missing = _compute_missing(df)

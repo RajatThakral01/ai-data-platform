@@ -20,7 +20,7 @@ async def generate_report(body: dict):
             detail="Session not found")
 
     df = session["df"]
-    if isinstance(df, dict):
+    if isinstance(df, (list, dict)):
         df = pd.DataFrame(df)
 
     filename = session.get("filename", "dataset")

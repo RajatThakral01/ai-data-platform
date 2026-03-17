@@ -123,6 +123,8 @@ def run_query(req: QueryRequest):
         raise HTTPException(status_code=404, detail="Session or DataFrame not found")
 
     df = session["df"]
+    if isinstance(df, (list, dict)):
+        df = pd.DataFrame(df)
     start_time = time.time()
     code = ""
 

@@ -21,7 +21,7 @@ async def upload_file(file: UploadFile = File(...)):
             df = pd.read_excel(io.BytesIO(contents))
             
         session_id = create_session()
-        update_session(session_id, "df", df)
+        update_session(session_id, "df", df.where(pd.notnull(df), None).to_dict(orient="records"))
         update_session(session_id, "filename", file.filename)
         
         # We trigger RAG indexing in the background asynchronously if needed 
@@ -37,8 +37,15 @@ async def upload_file(file: UploadFile = File(...)):
             pass
             
         def clean_for_json(obj):
-            if isinstance(obj, float) and math.isnan(obj):
+            import numpy as np
+            if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
                 return None
+            if isinstance(obj, (np.integer,)):
+                return int(obj)
+            if isinstance(obj, (np.floating,)):
+                return float(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
             if isinstance(obj, dict):
                 return {k: clean_for_json(v) for k, v in obj.items()}
             if isinstance(obj, list):

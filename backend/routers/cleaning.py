@@ -120,6 +120,8 @@ def run_cleaning(req: CleanRequest):
 
     try:
         df = session["df"]
+        if isinstance(df, (list, dict)):
+            df = pd.DataFrame(df)
 
         before = {
             "rows": len(df),

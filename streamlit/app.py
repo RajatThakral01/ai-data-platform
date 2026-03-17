@@ -138,9 +138,15 @@ def _handle_upload(uploaded) -> None:
             with st.spinner("Indexing dataset for semantic search..."):
                 try:
                     from rag import embedder, vector_store
-                    chunks_embeddings = embedder.embed_dataframe(df, uploaded.name)
-                    if chunks_embeddings:
-                        success = vector_store.store_dataset(uploaded.name, chunks_embeddings)
+                    import uuid
+                    # Generate a session_id if not already present
+                    if "rag_session_id" not in st.session_state:
+                        st.session_state["rag_session_id"] = str(uuid.uuid4())
+                    session_id = st.session_state["rag_session_id"]
+                    
+                    chunks = embedder.embed_dataframe(df, uploaded.name)
+                    if chunks:
+                        success = vector_store.store_dataset(session_id, uploaded.name, chunks)
                         if success:
                             st.session_state[rag_key] = True
                             st.sidebar.success(f"Successfully indexed {uploaded.name} for RAG.")

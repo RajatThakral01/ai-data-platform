@@ -96,6 +96,9 @@ export interface QueryResponse {
   code_used: string;
   context_chunks: string[];
   execution_time_ms: number;
+  query_type?: string;
+  summary?: string;
+  follow_ups?: string[];
 }
 
 export interface LogEntry {

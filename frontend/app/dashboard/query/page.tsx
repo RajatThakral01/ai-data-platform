@@ -10,6 +10,9 @@ interface ChatMessage {
   content: string;
   code?: string;
   time_ms?: number;
+  query_type?: string;
+  summary?: string;
+  follow_ups?: string[];
 }
 
 export default function QueryPage() {
@@ -19,6 +22,7 @@ export default function QueryPage() {
   const [loading, setLoading] = useState(false);
   const [showCode, setShowCode] = useState<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const setQuestion = (question: string) => setInput(question);
 
   useEffect(() => { setCurrentModule('query'); }, [setCurrentModule]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -35,6 +39,8 @@ export default function QueryPage() {
       setMessages(prev => [...prev, {
         type: 'assistant', content: result.answer,
         code: result.code_used, time_ms: result.execution_time_ms,
+        query_type: result.query_type, summary: result.summary,
+        follow_ups: result.follow_ups,
       }]);
     } catch (err: unknown) {
       setMessages(prev => [...prev, { type: 'assistant', content: `Error: ${err instanceof Error ? err.message : 'Failed'}` }]);
@@ -78,10 +84,28 @@ export default function QueryPage() {
           <div key={idx} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[80%] rounded-xl p-4 ${msg.type === 'user' ? 'bg-[var(--accent-cyan)]/10 border border-[var(--accent-cyan)]/20' : 'bg-[var(--bg-card)] border border-[var(--border-subtle)]'} text-[var(--text-primary)]`}>
               <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+              {msg.type === 'assistant' && msg.summary && (
+                <p className="text-xs text-[var(--text-muted)] mt-1 italic">{msg.summary}</p>
+              )}
               {msg.type === 'assistant' && (
                 <div className="flex items-center gap-3 mt-3 pt-3 border-t border-[var(--border-subtle)]">
                   {msg.time_ms !== undefined && <div className="flex items-center gap-1 text-xs text-[var(--text-muted)]"><Clock className="w-3 h-3" /> {msg.time_ms}ms</div>}
+                  {msg.query_type && (
+                    <span className="text-xs px-2 py-0.5 rounded bg-[var(--accent-purple)]/20 text-[var(--accent-purple)]">{msg.query_type}</span>
+                  )}
                   {msg.code && <button onClick={() => setShowCode(showCode === idx ? null : idx)} className="flex items-center gap-1 text-xs text-[var(--accent-purple)] hover:text-[var(--accent-cyan)] transition-colors"><Code2 className="w-3 h-3" /> {showCode === idx ? 'Hide' : 'Show'} Code</button>}
+                </div>
+              )}
+              {msg.type === 'assistant' && msg.follow_ups && msg.follow_ups.length > 0 && (
+                <div className="mt-3 space-y-1">
+                  <p className="text-xs text-[var(--text-muted)] uppercase">Suggested follow-ups</p>
+                  {msg.follow_ups.map((q, i) => (
+                    <button key={i}
+                      onClick={() => setQuestion(q)}
+                      className="block w-full text-left text-xs px-3 py-1.5 rounded border border-[var(--border-subtle)] text-[var(--accent-cyan)] hover:bg-[var(--accent-cyan)]/10 transition-colors">
+                      {q}
+                    </button>
+                  ))}
                 </div>
               )}
               {showCode === idx && msg.code && (

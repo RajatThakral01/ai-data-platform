@@ -80,7 +80,10 @@ def _build_prompt(df: pd.DataFrame, question: str, prev_error: str | None = None
         "- If result is a DataFrame, it will be converted to string automatically\n"
         "- Do NOT use print(), display(), st.write(), or show()\n"
         "- Do NOT import anything — pd, np, and df are already available\n"
-        "- Keep code concise, max 15 lines\n\n"
+        "- Keep code concise, max 20 lines\n"
+        "- If result is a number, also assign a plain English explanation:\n"
+        "  explanation = f'The value {result} means...context about what this means'\n"
+        "- Always provide business context for numbers\n\n"
         f"Question: {question}\n\n"
         f"DataFrame columns: {cols}\n"
         f"Numeric columns: {numeric_cols}\n"
@@ -113,17 +116,29 @@ def _exec_code(code: str, df: pd.DataFrame) -> str:
     exec(code, {"__builtins__": safe_builtins}, local_vars)
 
     result = local_vars.get("result", local_vars.get("answer", None))
+    explanation = local_vars.get("explanation", None)
     if result is None:
         return "Code executed but no `result` variable was set."
     if isinstance(result, pd.DataFrame):
         return result.to_string(index=False)
     if isinstance(result, pd.Series):
         return result.to_string()
+    if explanation:
+        return f"{result}\n\n{explanation}"
     return str(result)
 
 
 def classify_query(question: str) -> str:
     question_lower = question.lower()
+    if any(w in question_lower for w in [
+        "what is this", "what is the data", "what does this",
+        "describe the data", "about this", "tell me about",
+        "what kind of data", "overview", "summarize the dataset",
+        "what the data is", "data is about", "dataset about",
+        "what are we looking at", "what type of data",
+        "explain this data", "describe this dataset"
+    ]):
+        return "description"
     if any(w in question_lower for w in ["trend", "over time", "growth", "change"]):
         return "trend"
     if any(w in question_lower for w in ["compare", "difference", "vs", "versus"]):
@@ -140,12 +155,12 @@ def generate_follow_ups(question: str, answer: str, df_columns: list) -> list[st
         f"Given this data question: '{question}'\n"
         f"And this answer: '{str(answer)[:200]}'\n"
         f"Available columns: {df_columns[:10]}\n"
-        "Suggest exactly 3 short follow-up questions.\n"
+        "Suggest exactly 3 insightful follow-up questions that would help understand the data better.\n"
         "Return ONLY a JSON array of 3 strings. No explanation."
     )
     try:
         response, _ = get_llm_response(
-            prompt, temperature=0.7, max_tokens=200,
+            prompt, temperature=0.7, max_tokens=400,
             groq_model=GROQ_MODEL_LARGE, module_name="nl_query_followups"
         )
         import json, re
@@ -177,6 +192,44 @@ def run_query(req: QueryRequest):
     query_type = classify_query(req.question)
     start_time = time.time()
     code = ""
+
+    if query_type == "description":
+        cols = df.columns.tolist()
+        numeric_cols = df.select_dtypes(include="number").columns.tolist()
+        categorical_cols = df.select_dtypes(
+            include=["object", "category"]
+        ).columns.tolist()
+        desc_prompt = (
+            f"Describe this dataset in 4-5 sentences.\n"
+            f"Rows: {len(df)}, Columns: {cols}\n"
+            f"Numeric columns: {numeric_cols}\n"
+            f"Categorical columns: {categorical_cols}\n"
+            f"Do not use code. Write 4-5 sentences describing: "
+            f"(1) what this dataset appears to be about, "
+            f"(2) what business questions it could answer, "
+            f"(3) the most important columns and what they represent, "
+            f"(4) any notable patterns or data quality observations."
+        )
+        try:
+            desc_response, _ = get_llm_response(
+                desc_prompt, temperature=0.7, max_tokens=500,
+                groq_model=GROQ_MODEL_LARGE, module_name="nl_query_description"
+            )
+            answer = desc_response.strip()
+            execution_time_ms = int((time.time() - start_time) * 1000)
+            follow_ups = generate_follow_ups(req.question, answer, df.columns.tolist())
+            summary = generate_summary(req.question, answer)
+            return clean_for_json({
+                "question": req.question,
+                "answer": answer,
+                "code_used": "",
+                "execution_time_ms": execution_time_ms,
+                "query_type": "description",
+                "summary": summary,
+                "follow_ups": follow_ups,
+            })
+        except Exception as e:
+            pass  # fall through to normal code generation
 
     try:
         # First attempt

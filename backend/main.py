@@ -26,7 +26,7 @@ _streamlit_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 
 if _streamlit_path not in sys.path:
     sys.path.insert(0, _streamlit_path)
 
-from routers import upload, eda, cleaning, ml, insights, nl_query, report, observatory
+from routers import upload, eda, cleaning, ml, insights, nl_query, report, observatory, query_clusters
 
 app = FastAPI(title="AI Data Platform Backend")
 
@@ -56,6 +56,7 @@ app.include_router(insights.router, prefix="/api")
 app.include_router(nl_query.router, prefix="/api")
 app.include_router(report.router, prefix="/api")
 app.include_router(observatory.router, prefix="/api")
+app.include_router(query_clusters.router, prefix="/api")
 
 @app.on_event("startup")
 async def startup_event():

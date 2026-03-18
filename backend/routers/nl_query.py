@@ -11,6 +11,12 @@ import os
 import logging
 from dotenv import load_dotenv
 
+try:
+    from db.supabase_client import get_supabase
+    _supabase_available = True
+except ImportError:
+    _supabase_available = False
+
 load_dotenv()
 
 _streamlit_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "streamlit"))
@@ -116,6 +122,49 @@ def _exec_code(code: str, df: pd.DataFrame) -> str:
     return str(result)
 
 
+def classify_query(question: str) -> str:
+    question_lower = question.lower()
+    if any(w in question_lower for w in ["trend", "over time", "growth", "change"]):
+        return "trend"
+    if any(w in question_lower for w in ["compare", "difference", "vs", "versus"]):
+        return "comparison"
+    if any(w in question_lower for w in ["filter", "where", "show me", "list"]):
+        return "filter"
+    if any(w in question_lower for w in ["average", "mean", "sum", "total", "count", "max", "min"]):
+        return "aggregation"
+    return "general"
+
+
+def generate_follow_ups(question: str, answer: str, df_columns: list) -> list[str]:
+    prompt = (
+        f"Given this data question: '{question}'\n"
+        f"And this answer: '{str(answer)[:200]}'\n"
+        f"Available columns: {df_columns[:10]}\n"
+        "Suggest exactly 3 short follow-up questions.\n"
+        "Return ONLY a JSON array of 3 strings. No explanation."
+    )
+    try:
+        response, _ = get_llm_response(
+            prompt, temperature=0.7, max_tokens=200,
+            groq_model=GROQ_MODEL_LARGE, module_name="nl_query_followups"
+        )
+        import json, re
+        match = re.search(r"\[.*?\]", response, re.DOTALL)
+        if match:
+            return json.loads(match.group())[:3]
+    except Exception:
+        pass
+    return [
+        "What is the average of the main metric?",
+        "Show me the top 5 records",
+        "What are the trends over time?"
+    ]
+
+
+def generate_summary(question: str, answer: str) -> str:
+    return f"Query analyzed: {question[:80]}. Result: {str(answer)[:150]}."
+
+
 @router.post("/query")
 def run_query(req: QueryRequest):
     session = get_session(req.session_id)
@@ -125,6 +174,7 @@ def run_query(req: QueryRequest):
     df = session["df"]
     if isinstance(df, (list, dict)):
         df = pd.DataFrame(df)
+    query_type = classify_query(req.question)
     start_time = time.time()
     code = ""
 
@@ -154,12 +204,34 @@ def run_query(req: QueryRequest):
                 answer = f"Query could not be executed after retry. Error: {str(retry_err)}"
 
         execution_time_ms = int((time.time() - start_time) * 1000)
+        summary = generate_summary(req.question, answer)
+        follow_ups = generate_follow_ups(req.question, answer, df.columns.tolist())
+
+        if _supabase_available:
+            supabase = get_supabase()
+            if supabase:
+                try:
+                    supabase.table("nl_query_history").insert({
+                        "session_id": req.session_id,
+                        "question": req.question,
+                        "answer": str(answer)[:500],
+                        "query_type": query_type,
+                        "summary": summary,
+                        "follow_ups": follow_ups,
+                        "execution_time_ms": execution_time_ms,
+                        "success": True,
+                    }).execute()
+                except Exception as e:
+                    logger.warning(f"Failed to store query history: {e}")
 
         return clean_for_json({
             "question": req.question,
             "answer": answer,
             "code_used": code,
             "execution_time_ms": execution_time_ms,
+            "query_type": query_type,
+            "summary": summary,
+            "follow_ups": follow_ups,
         })
 
     except Exception as e:
@@ -169,4 +241,7 @@ def run_query(req: QueryRequest):
             "answer": f"Error: {str(e)}",
             "code_used": code,
             "execution_time_ms": execution_time_ms,
+            "query_type": query_type,
+            "summary": generate_summary(req.question, f"Error: {str(e)}"),
+            "follow_ups": generate_follow_ups(req.question, f"Error: {str(e)}", df.columns.tolist()),
         })

@@ -12,6 +12,7 @@ sentence-transformers
 chromadb
 groq
 google-generativeai
+hdbscan>=0.8.33
 redis>=4.0.0
 supabase>=2.0.0
 pgvector>=0.2.0

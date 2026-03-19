@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import { 
   LayoutDashboard, 
   BarChart2, 
+  BarChart3, 
   Wand2, 
   BrainCircuit, 
   Lightbulb, 
@@ -25,6 +26,7 @@ const navItems = [
   { name: 'NL Query', href: '/dashboard/query', icon: MessageSquareText },
   { name: 'Report Generator', href: '/dashboard/report', icon: FileText },
   { name: 'Observatory', href: '/dashboard/observatory', icon: Activity },
+  { name: 'BI Dashboard', href: '/dashboard/advanced', icon: BarChart3 },
 ];
 
 export default function Sidebar() {

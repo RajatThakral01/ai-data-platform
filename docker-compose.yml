@@ -31,7 +31,9 @@ services:
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_KEY=${SUPABASE_KEY}
       - FRONTEND_URL=http://localhost:3000
-      - METABASE_SITE_URL=http://localhost:3001
+      - METABASE_SITE_URL=http://ai_platform_metabase:3000
+      - METABASE_EMAIL=${METABASE_EMAIL}
+      - METABASE_PASSWORD=${METABASE_PASSWORD}
       - METABASE_EMBEDDING_SECRET=${METABASE_EMBEDDING_SECRET}
     volumes:
       - ./streamlit:/streamlit:ro

@@ -24,6 +24,26 @@ async def upload_file(file: UploadFile = File(...)):
         update_session(session_id, "df", df.where(pd.notnull(df), None).to_dict(orient="records"))
         update_session(session_id, "filename", file.filename)
         
+        # Save to Supabase for Metabase visualization
+        try:
+            from db.supabase_client import get_supabase
+            supabase = get_supabase()
+            if supabase:
+                rows = []
+                df_for_upload = df.where(pd.notnull(df), None)
+                for idx, row in df_for_upload.head(1000).iterrows():
+                    rows.append({
+                        "session_id": session_id,
+                        "filename": file.filename,
+                        "row_index": int(idx),
+                        "data": row.to_dict()
+                    })
+                for i in range(0, len(rows), 100):
+                    batch = rows[i:i+100]
+                    supabase.table("uploaded_data").insert(batch).execute()
+        except Exception as e:
+            print(f"Supabase data upload failed (non-critical): {e}")
+        
         # We trigger RAG indexing in the background asynchronously if needed 
         # (This avoids blocking the fast upload response)
         try:

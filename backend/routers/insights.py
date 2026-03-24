@@ -394,9 +394,32 @@ def run_insights(req: InsightsRequest):
             "charts": charts,
             "executive_summary": executive_summary,
             "ai_insights": ai_insights,
+            "dashboard_url": None,
         }
 
         result_dict = clean_for_json(response_payload)
+
+        # Auto-generate Metabase dashboard (non-blocking background thread)
+        try:
+            import threading
+            from metabase.auto_dashboard import create_dashboard
+            _session_id = req.session_id
+            _filename = session.get("filename", "dataset.csv") if isinstance(session, dict) else getattr(session, "filename", "dataset.csv")
+            _domain = context.get("domain", "general")
+            def _create_dashboard():
+                url = create_dashboard(
+                    session_id=_session_id,
+                    filename=_filename,
+                    domain=_domain,
+                    insights=result_dict
+                )
+                if url:
+                    print(f"[Auto-Dashboard] Created: {url}")
+                else:
+                    print(f"[Auto-Dashboard] Creation returned None")
+            threading.Thread(target=_create_dashboard, daemon=True).start()
+        except Exception as e:
+            print(f"[Auto-Dashboard] Trigger failed (non-critical): {e}")
 
         update_session(req.session_id, "insights_results", result_dict)
 

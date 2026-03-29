@@ -5,13 +5,7 @@ import { useStore } from '@/lib/store';
 import { runInsights } from '@/lib/api';
 import { InsightsResponse } from '@/lib/types';
 import { Lightbulb, TrendingUp, AlertCircle, Loader2, Sparkles, AlertTriangle } from 'lucide-react';
-import {
-  ResponsiveContainer,
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  LineChart, Line,
-  ScatterChart, Scatter,
-  PieChart, Pie, Cell
-} from 'recharts';
+import ReactECharts from 'echarts-for-react';
 
 const CHART_COLORS = ['#00d4ff', '#7b2fff', '#4FCC8E', '#F7644F', '#ff6b35', '#ffff00'];
 
@@ -203,59 +197,79 @@ export default function InsightsPage() {
               
               <div className="p-4 h-80 relative flex items-center justify-center bg-white/5">
                 {chart.data && chart.data.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="100%">
-                    {chart.chart_type === 'line' ? (
-                      <LineChart data={chart.data} margin={{ top: 10, right: 10, left: 10, bottom: 20 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#21262d" vertical={false} />
-                        <XAxis dataKey="x" stroke="#8b949e" fontSize={11} tickMargin={10} />
-                        <YAxis stroke="#8b949e" fontSize={11} tickFormatter={(v) => v >= 1000 ? `${(v/1000).toFixed(1)}k` : v} />
-                        <Tooltip content={<CustomTooltip />} />
-                        <Line type="monotone" dataKey="y" name={chart.y_col || 'Value'} stroke="#00d4ff" strokeWidth={3} dot={{ r: 4, fill: '#0a0a0f', strokeWidth: 2 }} activeDot={{ r: 6 }} />
-                      </LineChart>
-                    ) : (chart.chart_type === 'pie' || chart.chart_type === 'donut') ? (
-                      <PieChart>
-                        <Tooltip content={<CustomTooltip />} />
-                        <Pie
-                          data={chart.data}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={chart.chart_type === 'donut' ? 60 : 0}
-                          outerRadius={90}
-                          paddingAngle={2}
-                          dataKey="y"
-                          nameKey="x"
-                        >
-                          {chart.data.map((_, i) => (
-                            <Cell key={`cell-${i}`} fill={CHART_COLORS[i % CHART_COLORS.length]} stroke="rgba(0,0,0,0.2)" />
-                          ))}
-                        </Pie>
-                        <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }} />
-                      </PieChart>
-                    ) : chart.chart_type === 'scatter' ? (
-                      <ScatterChart margin={{ top: 10, right: 10, left: 10, bottom: 20 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#21262d" vertical={false} />
-                        <XAxis dataKey="x" type="category" stroke="#8b949e" fontSize={11} />
-                        <YAxis dataKey="y" name={chart.y_col} stroke="#8b949e" fontSize={11} tickFormatter={(v) => v >= 1000 ? `${(v/1000).toFixed(1)}k` : v} />
-                        <Tooltip content={<CustomTooltip />} />
-                        <Scatter name={chart.title} data={chart.data} fill="#7b2fff" />
-                      </ScatterChart>
-                    ) : (
-                      <BarChart data={chart.data} margin={{ top: 10, right: 10, left: 10, bottom: 40 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#21262d" vertical={false} />
-                        <XAxis 
-                          dataKey="x" 
-                          stroke="#8b949e" 
-                          fontSize={11} 
-                          tickMargin={10} 
-                          angle={chart.data.length > 5 ? -45 : 0} 
-                          textAnchor={chart.data.length > 5 ? 'end' : 'middle'} 
-                        />
-                        <YAxis stroke="#8b949e" fontSize={11} tickFormatter={(v) => v >= 1000 ? `${(v/1000).toFixed(1)}k` : v} />
-                        <Tooltip content={<CustomTooltip />} cursor={{ fill: '#ffffff05' }} />
-                        <Bar dataKey="y" name={chart.y_col || 'Value'} fill="#7b2fff" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    )}
-                  </ResponsiveContainer>
+                  (() => {
+                    const labels = chart.data.map((d: any) => d.x);
+                    const values = chart.data.map((d: any) => d.y);
+                    const COLORS = ["#00d4ff", "#7b2fff", "#ff6b35", "#00ff88", "#d4b100"];
+
+                    let option: any = {};
+
+                    if (chart.chart_type === 'line') {
+                      option = {
+                        backgroundColor: 'transparent',
+                        tooltip: { trigger: 'axis' },
+                        grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+                        xAxis: { type: 'category', data: labels, axisLabel: { color: '#64748b', fontSize: 11 } },
+                        yAxis: { type: 'value', axisLabel: { color: '#64748b', fontSize: 11 } },
+                        series: [{
+                          data: values, type: 'line', smooth: true,
+                          lineStyle: { color: '#00d4ff', width: 3 },
+                          itemStyle: { color: '#00d4ff' },
+                          areaStyle: { color: 'rgba(0, 212, 255, 0.1)' }
+                        }]
+                      };
+                    } else if (chart.chart_type === 'pie' || chart.chart_type === 'donut') {
+                      option = {
+                        backgroundColor: 'transparent',
+                        tooltip: { trigger: 'item' },
+                        legend: { bottom: 0, textStyle: { color: '#64748b', fontSize: 11 } },
+                        series: [{
+                          type: 'pie',
+                          radius: chart.chart_type === 'donut' ? ['40%', '70%'] : '65%',
+                          data: chart.data.map((d: any, i: number) => ({
+                            value: d.y, name: d.x,
+                            itemStyle: { color: COLORS[i % COLORS.length] }
+                          })),
+                          label: { show: false }
+                        }]
+                      };
+                    } else if (chart.chart_type === 'scatter') {
+                      option = {
+                        backgroundColor: 'transparent',
+                        tooltip: { trigger: 'item' },
+                        grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+                        xAxis: { type: 'category', data: labels, axisLabel: { color: '#64748b', fontSize: 11 } },
+                        yAxis: { type: 'value', axisLabel: { color: '#64748b', fontSize: 11 } },
+                        series: [{
+                          data: values, type: 'scatter',
+                          itemStyle: { color: '#7b2fff' }, symbolSize: 10
+                        }]
+                      };
+                    } else {
+                      option = {
+                        backgroundColor: 'transparent',
+                        tooltip: { trigger: 'axis' },
+                        grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+                        xAxis: {
+                          type: 'category', data: labels,
+                          axisLabel: { color: '#64748b', fontSize: 11, rotate: labels.length > 5 ? 45 : 0 }
+                        },
+                        yAxis: { type: 'value', axisLabel: { color: '#64748b', fontSize: 11 } },
+                        series: [{
+                          data: values, type: 'bar',
+                          itemStyle: { color: '#7b2fff', borderRadius: [4, 4, 0, 0] }
+                        }]
+                      };
+                    }
+
+                    return (
+                      <ReactECharts
+                        option={option}
+                        style={{ height: '100%', width: '100%' }}
+                        opts={{ renderer: 'canvas' }}
+                      />
+                    );
+                  })()
                 ) : (
                   <div className="text-center">
                     <AlertCircle className="w-8 h-8 text-[var(--text-muted)] mx-auto mb-2 opacity-50" />

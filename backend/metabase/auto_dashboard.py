@@ -29,16 +29,37 @@ def create_dashboard(session_id: str, filename: str, domain: str,
         dashboard_id = dashboard["id"]
         charts = _get_charts_for_domain(domain, insights, table_id, db_id, session_id)
 
+        created_cards = []
         for i, chart_def in enumerate(charts[:5]):
             card = metabase_post("/api/card", chart_def)
             if card:
-                metabase_post(f"/api/dashboard/{dashboard_id}/cards", {
-                    "cardId": card["id"],
+                created_cards.append({
+                    "id": -(i + 1),
+                    "card_id": card["id"],
                     "col": (i % 2) * 12,
                     "row": (i // 2) * 8,
                     "size_x": 12,
-                    "size_y": 8
+                    "size_y": 8,
+                    "series": [],
+                    "parameter_mappings": [],
+                    "visualization_settings": {}
                 })
+
+        if created_cards:
+            import requests as _req
+            from .client import get_token, METABASE_URL
+            token = get_token()
+            if token:
+                try:
+                    resp = _req.put(
+                        f"{METABASE_URL}/api/dashboard/{dashboard_id}",
+                        headers={"X-Metabase-Session": token},
+                        json={"dashcards": created_cards},
+                        timeout=15
+                    )
+                    logger.info(f"Dashboard PUT response: {resp.status_code} {resp.text[:200]}")
+                except Exception as e:
+                    logger.error(f"Dashboard PUT failed: {e}")
 
         return f"{METABASE_URL}/dashboard/{dashboard_id}"
 

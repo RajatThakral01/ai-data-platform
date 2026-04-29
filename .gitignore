@@ -1,0 +1,29 @@
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.csv
+*.xlsx
+.env
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+
+# Backend
+backend/__pycache__/
+backend/*.pyc
+
+# Data & Logs
+*.db
+*.sqlite3
+chroma_db/
+uploads/
+/app/uploads/
+logs/
+*.log
+
+# Docker
+.docker/

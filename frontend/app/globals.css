@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-primary: #0a0a0f;
+    --bg-card: #0f0f1a;
+    --accent-cyan: #00d4ff;
+    --accent-purple: #7b2fff;
+    --accent-orange: #ff6b35;
+    --accent-green: #00ff88;
+    --text-primary: #e2e8f0;
+    --text-muted: #64748b;
+    --border-subtle: rgba(0, 212, 255, 0.15);
+    --glow-cyan: 0 0 20px rgba(0, 212, 255, 0.1);
+  }
+  
+  body {
+    background-color: #0a0a0f;
+    color: #e2e8f0;
+    font-family: 'Inter', sans-serif;
+    --bg-card-hover: #161625;
+  }
+}
+
+.data-card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.75rem;
+  transition: all 0.3s ease;
+}
+
+.data-card:hover {
+  box-shadow: var(--glow-cyan);
+}
+
+.bg-card {
+  background-color: var(--bg-card);
+}
+
+.grid-bg {
+  background-image: 
+    linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+}

@@ -1,0 +1,182 @@
+
+import json
+import os
+import time
+import uuid
+from typing import Any, Dict, Optional
+
+from fastapi import HTTPException
+
+try:
+    from db.supabase_client import get_supabase
+    _supabase_available = True
+except ImportError:
+    _supabase_available = False
+
+MAX_SESSIONS = 50
+SESSION_EXPIRY_SECONDS = 2 * 60 * 60  # 2 hours
+
+_sessions: Dict[str, Dict[str, Any]] = {}
+
+_redis = None
+_backend = "memory"
+
+try:
+    import redis  # type: ignore
+
+    redis_url = os.getenv("REDIS_URL")
+    if redis_url:
+        try:
+            _pool = redis.ConnectionPool.from_url(redis_url)
+            _redis = redis.Redis(connection_pool=_pool)
+            _redis.ping()
+            _backend = "redis"
+        except Exception:
+            _redis = None
+            _backend = "memory"
+except Exception:
+    _redis = None
+    _backend = "memory"
+
+if _backend == "redis":
+    print("Session store: Redis connected (REDIS_URL)")
+else:
+    print("Session store: using in-memory fallback")
+
+
+def get_backend() -> str:
+    if _supabase_available:
+        supabase = get_supabase()
+        if supabase:
+            if _backend == "redis":
+                return "supabase+redis"
+            return "supabase+memory"
+    return _backend
+
+
+def _redis_key(session_id: str) -> str:
+    return f"session:{session_id}"
+
+
+def _cleanup_expired_sessions() -> None:
+    now = time.time()
+    expired_ids = [
+        session_id
+        for session_id, data in _sessions.items()
+        if now - data.get("created_at", 0) > SESSION_EXPIRY_SECONDS
+    ]
+    for session_id in expired_ids:
+        del _sessions[session_id]
+
+
+def create_session() -> str:
+    """Create a new session and return the ID."""
+    if _backend == "redis":
+        session_id = str(uuid.uuid4())
+        key = _redis_key(session_id)
+        payload = {"created_at": json.dumps(time.time())}
+        _redis.hset(key, mapping=payload)
+        _redis.expire(key, SESSION_EXPIRY_SECONDS)
+        supabase = get_supabase() if _supabase_available else None
+        if supabase:
+            try:
+                supabase.table("sessions").insert({
+                    "id": session_id,
+                    "filename": None,
+                    "row_count": None,
+                    "metadata": {}
+                }).execute()
+            except Exception as e:
+                print(f"Supabase session create failed: {e}")
+        return session_id
+
+    _cleanup_expired_sessions()
+    if len(_sessions) >= MAX_SESSIONS:
+        raise HTTPException(status_code=429, detail="Maximum number of sessions reached")
+
+    session_id = str(uuid.uuid4())
+    _sessions[session_id] = {
+        "created_at": time.time(),
+    }
+    supabase = get_supabase() if _supabase_available else None
+    if supabase:
+        try:
+            supabase.table("sessions").insert({
+                "id": session_id,
+                "filename": None,
+                "row_count": None,
+                "metadata": {}
+            }).execute()
+        except Exception as e:
+            print(f"Supabase session create failed: {e}")
+    return session_id
+
+
+def get_session(session_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve session data by string ID."""
+    if _backend == "redis":
+        key = _redis_key(session_id)
+        data = _redis.hgetall(key)
+        if not data:
+            return None
+        result: Dict[str, Any] = {}
+        for raw_key, raw_value in data.items():
+            key_str = raw_key.decode("utf-8") if isinstance(raw_key, bytes) else str(raw_key)
+            value_str = raw_value.decode("utf-8") if isinstance(raw_value, bytes) else str(raw_value)
+            result[key_str] = json.loads(value_str)
+        return result
+
+    _cleanup_expired_sessions()
+    return _sessions.get(session_id)
+
+
+def update_session(session_id: str, key: str, value: Any) -> None:
+    """Update a specific key in the session dictionary."""
+    if _backend == "redis":
+        redis_key = _redis_key(session_id)
+        _redis.hset(redis_key, key, json.dumps(value))
+        _redis.expire(redis_key, SESSION_EXPIRY_SECONDS)
+        supabase = get_supabase() if _supabase_available else None
+        if supabase and key in ("filename", "row_count"):
+            try:
+                supabase.table("sessions").update(
+                    {key: value}
+                ).eq("id", session_id).execute()
+            except Exception as e:
+                print(f"Supabase session update failed: {e}")
+        return
+
+    if session_id in _sessions:
+        _sessions[session_id][key] = value
+        supabase = get_supabase() if _supabase_available else None
+        if supabase and key in ("filename", "row_count"):
+            try:
+                supabase.table("sessions").update(
+                    {key: value}
+                ).eq("id", session_id).execute()
+            except Exception as e:
+                print(f"Supabase session update failed: {e}")
+
+
+def delete_session(session_id: str) -> None:
+    if _backend == "redis":
+        _redis.delete(_redis_key(session_id))
+        supabase = get_supabase() if _supabase_available else None
+        if supabase:
+            try:
+                supabase.table("sessions").delete().eq(
+                    "id", session_id
+                ).execute()
+            except Exception as e:
+                print(f"Supabase session delete failed: {e}")
+        return
+
+    _sessions.pop(session_id, None)
+    supabase = get_supabase() if _supabase_available else None
+    if supabase:
+        try:
+            supabase.table("sessions").delete().eq(
+                "id", session_id
+            ).execute()
+        except Exception as e:
+            print(f"Supabase session delete failed: {e}")

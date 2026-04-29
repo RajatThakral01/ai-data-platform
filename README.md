@@ -129,7 +129,7 @@ Ollama (optional) # https://ollama.ai — for local fallback
 ### Installation
 ```bash
 # Clone the repo
-git clone https://github.com/RajatThakral01/ai-analytics-platform.git
+git clone https://github.com/RajatThakral01/ai-data-platform.git
 cd ai-analytics-platform
 
 # Install and run using Docker (Recommended)

@@ -70,3 +70,31 @@ export const getObservatoryLogs = async (limit: number = 50): Promise<LogEntry[]
   const response = await axios.get(`${API_URL}/observatory/logs?limit=${limit}`);
   return response.data;
 };
+
+export interface BIDashboardResponse {
+  html_content:     string;
+  domain:           string;
+  source:           string;
+  row_count:        number;
+  columns_analyzed: number;
+  charts_count?:    number;
+  kpis_count?:      number;
+}
+
+export const generateBIDashboard = async (
+  sessionId: string
+): Promise<BIDashboardResponse> => {
+  const response = await axios.post(`${API_URL}/bi/generate`, {
+    session_id: sessionId,
+  });
+  return response.data;
+};
+
+export const getCachedBIDashboard = async (
+  sessionId: string
+): Promise<BIDashboardResponse> => {
+  const response = await axios.get(`${API_URL}/bi/cached/${sessionId}`);
+  return response.data;
+};
+
+

@@ -24,9 +24,9 @@ const navItems = [
   { name: 'ML Recommender', href: '/dashboard/ml', icon: BrainCircuit },
   { name: 'Data Insights', href: '/dashboard/insights', icon: Lightbulb },
   { name: 'NL Query', href: '/dashboard/query', icon: MessageSquareText },
+  { name: 'AI BI Dashboard', href: '/dashboard/bi', icon: BarChart3 },
   { name: 'Report Generator', href: '/dashboard/report', icon: FileText },
   { name: 'Observatory', href: '/dashboard/observatory', icon: Activity },
-  { name: 'BI Dashboard', href: '/dashboard/advanced', icon: BarChart3 },
 ];
 
 export default function Sidebar() {

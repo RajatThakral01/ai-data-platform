@@ -154,6 +154,20 @@ export default function InsightsPage() {
         </div>
       </div>
 
+      {data.executive_summary && (
+        <div className="data-card p-5 mb-4 border-l-4 border-l-[var(--accent-cyan)]">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="w-1.5 h-5 rounded-full bg-[var(--accent-cyan)]" />
+            <h3 className="text-xs font-semibold tracking-widest uppercase text-[var(--accent-cyan)]">
+              Executive Summary
+            </h3>
+          </div>
+          <p className="text-sm leading-relaxed text-[var(--text-primary)]">
+            {data.executive_summary}
+          </p>
+        </div>
+      )}
+
       {/* KPI Cards Grid */}
       <div>
         <h2 className="text-xl font-bold text-[var(--text-primary)] mb-4">Core Performance Indicators</h2>

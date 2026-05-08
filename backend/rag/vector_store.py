@@ -238,7 +238,21 @@ if not _supabase_available:
                 ids.append(f"{collection_name}_chunk_{i}")
                 documents.append(chunk["text"])
                 embeddings.append(chunk["embedding"])
-                metadatas.append(chunk.get("metadata", {}))
+
+                # ChromaDB only allows str/int/float/bool metadata values.
+                # Serialize any list/dict values to strings before upsert.
+                raw_meta = chunk.get("metadata", {}) or {}
+                safe_meta = {}
+                for k, v in raw_meta.items():
+                    if isinstance(v, list):
+                        safe_meta[k] = ", ".join(str(x) for x in v)
+                    elif isinstance(v, dict):
+                        safe_meta[k] = str(v)
+                    elif isinstance(v, (str, int, float, bool)):
+                        safe_meta[k] = v
+                    else:
+                        safe_meta[k] = str(v)
+                metadatas.append(safe_meta)
 
             collection.upsert(
                 ids=ids,

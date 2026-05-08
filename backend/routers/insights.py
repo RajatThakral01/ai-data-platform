@@ -33,9 +33,9 @@ def clean_for_json(obj):
     return obj
 
 
-def _get_dataset_metadata(df: pd.DataFrame) -> dict:
+def _get_dataset_metadata(df: pd.DataFrame, eda_results: dict = None) -> dict:
     """Extract metadata from DataFrame for LLM prompts (no Streamlit dependency)."""
-    return {
+    base_meta = {
         "columns": df.columns.tolist(),
         "dtypes": [str(d) for d in df.dtypes],
         "rows": len(df),
@@ -44,6 +44,24 @@ def _get_dataset_metadata(df: pd.DataFrame) -> dict:
         "numeric_cols": df.select_dtypes(include="number").columns.tolist(),
         "categorical_cols": df.select_dtypes(include=["object", "category"]).columns.tolist(),
     }
+    if eda_results:
+        base_meta["stats"] = eda_results.get("stats", {})
+        base_meta["missing"] = eda_results.get("missing", {})
+        base_meta["outliers"] = eda_results.get("outliers", {})
+        base_meta["correlations"] = eda_results.get("correlations", {})
+        base_meta["column_types"] = eda_results.get("column_types", {})
+    else:
+        numeric_df = df.select_dtypes(include="number")
+        base_meta["stats"] = numeric_df.describe().round(2).to_dict() if not numeric_df.empty else {}
+        base_meta["missing"] = {col: round(df[col].isna().mean() * 100, 1) for col in df.columns if df[col].isna().any()}
+        base_meta["outliers"] = {}
+        base_meta["correlations"] = numeric_df.corr().round(2).to_dict() if len(numeric_df.columns) >= 2 else {}
+        base_meta["column_types"] = {
+            "numeric": df.select_dtypes(include="number").columns.tolist(),
+            "categorical": df.select_dtypes(include="object").columns.tolist(),
+            "datetime": df.select_dtypes(include="datetime").columns.tolist(),
+        }
+    return base_meta
 
 
 def format_value(val, col_name: str = "") -> str:
@@ -94,6 +112,8 @@ def _detect_business_context(df: pd.DataFrame, meta: dict) -> dict:
         f"Given this dataset with columns: {meta['columns']}\n"
         f"and sample data: {meta['sample']}\n"
         f"and basic stats: {meta['rows']} rows, dtypes: {meta['dtypes']}\n\n"
+        f"Top correlations: {str(meta.get('correlations', {}))[:500]}\n"
+        f"Missing value columns: {list(meta.get('missing', {}).keys())}\n\n"
         "Answer in JSON only:\n"
         "{\n"
         '  "domain": "e-commerce | telecom | retail | finance | hr | healthcare | marketing | logistics | other",\n'
@@ -176,6 +196,56 @@ def _extract_kpis(df: pd.DataFrame, context: dict) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Step 3: Chart specs via LLM + data computation
 # ---------------------------------------------------------------------------
+def _validate_chart_spec(spec: dict, df: pd.DataFrame, avoid_cols: list) -> tuple[bool, dict]:
+    """
+    Validates and auto-corrects a chart spec from LLM.
+    Returns (is_valid, corrected_spec).
+    """
+    x_col = spec.get("x_column")
+    y_col = spec.get("y_column")
+    chart_type = spec.get("chart_type", "bar")
+    agg = spec.get("aggregation", "none")
+
+    if not x_col or x_col not in df.columns:
+        return False, spec
+
+    if x_col in avoid_cols:
+        return False, spec
+
+    if y_col and y_col == x_col:
+        return False, spec
+
+    if y_col and y_col not in df.columns:
+        spec["y_column"] = None
+        y_col = None
+
+    if chart_type in ["bar", "line", "scatter"] and y_col:
+        if not pd.api.types.is_numeric_dtype(df[y_col]):
+            numeric_cols = df.select_dtypes(include="number").columns.tolist()
+            safe_numeric = [c for c in numeric_cols if c not in avoid_cols and c != x_col]
+            if safe_numeric:
+                spec["y_column"] = safe_numeric[0]
+            else:
+                return False, spec
+
+    if chart_type in ["pie", "donut"]:
+        unique_count = df[x_col].nunique()
+        if unique_count > 10:
+            spec["chart_type"] = "bar"
+        elif unique_count > 8:
+            pass
+
+    if chart_type == "histogram":
+        if not pd.api.types.is_numeric_dtype(df[x_col]):
+            return False, spec
+        spec["y_column"] = None
+
+    if agg in ["sum", "mean"] and not spec.get("y_column"):
+        spec["aggregation"] = "count"
+
+    return True, spec
+
+
 def _generate_charts(df: pd.DataFrame, meta: dict, context: dict) -> list[dict]:
     domain = context.get("domain", "general")
     entity = context.get("business_entity", "row")
@@ -191,6 +261,8 @@ def _generate_charts(df: pd.DataFrame, meta: dict, context: dict) -> list[dict]:
         f"Data types: {meta['dtypes']}\n"
         f"Sample rows: {meta['sample']}\n"
         f"Columns to AVOID (IDs/codes): {avoid_cols}\n\n"
+        f"Key correlations found: {str(meta.get('correlations', {}))[:600]}\n"
+        f"Outlier counts: {meta.get('outliers', {})}\n\n"
         "Generate exactly 5 chart specifications that answer these specific business questions:\n"
         f"{b_qs}\n\n"
         "Rules:\n"
@@ -231,13 +303,14 @@ def _generate_charts(df: pd.DataFrame, meta: dict, context: dict) -> list[dict]:
 
     chart_outputs = []
     for spec in specs[:5]:
+        is_valid, spec = _validate_chart_spec(spec, df, avoid_cols)
+        if not is_valid:
+            continue
+
         chart_type = spec.get("chart_type", "bar")
         x_col = spec.get("x_column")
         y_col = spec.get("y_column")
         agg = spec.get("aggregation", "none")
-
-        if not x_col or x_col not in df.columns:
-            continue
 
         plot_df = df.copy()
 
@@ -313,16 +386,60 @@ def _generate_executive_summary(meta: dict) -> str:
 # ---------------------------------------------------------------------------
 # Step 5: AI bullet insights via LLM
 # ---------------------------------------------------------------------------
-def _generate_ai_insights(domain: str, entity: str) -> list[str]:
+def _generate_ai_insights(domain: str, entity: str, kpis: list = None, charts: list = None, meta: dict = None) -> list[str]:
+    kpi_summary = ""
+    if kpis:
+        kpi_lines = [f"- {k['label']}: {k['formatted_value']}" for k in kpis[:4]]
+        kpi_summary = "Computed KPIs:\n" + "\n".join(kpi_lines)
+
+    chart_summary = ""
+    if charts:
+        chart_lines = [
+            f"- {c['title']} ({c['chart_type']}): {c.get('insight_hint','')}"
+            for c in charts[:5]
+        ]
+        chart_summary = "Charts generated for:\n" + "\n".join(chart_lines)
+
+    correlation_summary = ""
+    if meta and meta.get("correlations"):
+        corr_dict = meta["correlations"]
+        pairs = []
+        seen = set()
+        for col1, others in corr_dict.items():
+            if isinstance(others, dict):
+                for col2, val in others.items():
+                    if col1 != col2 and (col2, col1) not in seen:
+                        try:
+                            pairs.append((col1, col2, abs(float(val))))
+                            seen.add((col1, col2))
+                        except (TypeError, ValueError):
+                            pass
+        top_corr = sorted(pairs, key=lambda x: x[2], reverse=True)[:3]
+        if top_corr:
+            corr_lines = [f"- {a} vs {b}: r={v:.2f}" for a, b, v in top_corr]
+            correlation_summary = "Strongest correlations:\n" + "\n".join(corr_lines)
+
+    outlier_summary = ""
+    if meta and meta.get("outliers"):
+        outlier_cols = [f"{col} ({count} outliers)"
+                        for col, count in meta["outliers"].items() if count > 0]
+        if outlier_cols:
+            outlier_summary = f"Outliers detected in: {', '.join(outlier_cols[:3])}"
+
     prompt = (
         "You are a senior business analyst presenting to the CEO. "
-        "Write 5 bullet point insights based on context: "
-        f"Domain: {domain}, Entity: {entity}. "
-        "Each must: start with an action emoji, explain business impact, "
-        "and suggest one action. Max 2 sentences each.\n"
-        "IMPORTANT: Return plain text only. Do not use any XML tags, HTML tags, "
-        "markdown formatting, or special characters. No <para>, no **bold**, "
-        "no #headers. Just plain bullet points starting with an emoji.\n"
+        f"Dataset: {domain} domain, each row represents a {entity}.\n\n"
+        f"{kpi_summary}\n"
+        f"{chart_summary}\n"
+        f"{correlation_summary}\n"
+        f"{outlier_summary}\n\n"
+        "Using the specific numbers above, write 5 bullet point insights. "
+        "Each must: start with an action emoji, reference specific numbers "
+        "from the data above, explain business impact, and suggest one "
+        "concrete action. Max 2 sentences each.\n"
+        "IMPORTANT: Return plain text only. No XML tags, no HTML tags, "
+        "no markdown. No <para>, no **bold**, no #headers. "
+        "Just plain bullet points starting with an emoji.\n"
     )
     try:
         text, _ = get_llm_response(
@@ -333,6 +450,77 @@ def _generate_ai_insights(domain: str, entity: str) -> list[str]:
         return [i.strip() for i in text.split('\n') if i.strip() and len(i.strip()) > 3]
     except Exception:
         return ["Unable to extract analytical points at this time."]
+
+
+def _generate_correlation_chart(
+    df: pd.DataFrame,
+    target_metric: str,
+    meta: dict,
+    avoid_cols: list
+) -> dict | None:
+    """
+    Generates a correlation bar chart showing how numeric columns
+    correlate with the target metric. Pure pandas, no LLM needed.
+    Returns a chart dict or None if not possible.
+    """
+    try:
+        numeric_cols = df.select_dtypes(include="number").columns.tolist()
+
+        if len(numeric_cols) < 3:
+            return None
+
+        target_col = None
+        for col in numeric_cols:
+            if col.lower() == target_metric.lower():
+                target_col = col
+                break
+
+        if not target_col:
+            safe_cols = [c for c in numeric_cols if c not in avoid_cols]
+            if not safe_cols:
+                return None
+            target_col = safe_cols[0]
+
+        other_cols = [c for c in numeric_cols
+                      if c != target_col and c not in avoid_cols]
+
+        if len(other_cols) < 2:
+            return None
+
+        correlations = {}
+        for col in other_cols:
+            try:
+                corr_val = df[target_col].corr(df[col])
+                if not pd.isna(corr_val):
+                    correlations[col] = round(float(corr_val), 3)
+            except Exception:
+                pass
+
+        if not correlations:
+            return None
+
+        sorted_corr = sorted(
+            correlations.items(),
+            key=lambda x: abs(x[1]),
+            reverse=True
+        )[:8]
+
+        chart_data = [{"x": col, "y": val} for col, val in sorted_corr]
+
+        return {
+            "chart_type": "bar",
+            "x_col": "Feature",
+            "y_col": f"Correlation with {target_col}",
+            "title": f"Feature Correlation with {target_col}",
+            "business_question": f"Which factors most influence {target_col}?",
+            "insight_hint": "Positive bars increase target metric, "
+                           "negative bars decrease it. "
+                           "Longer bars = stronger relationship.",
+            "data": chart_data,
+            "is_correlation_chart": True,
+        }
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +536,8 @@ def run_insights(req: InsightsRequest):
         df = session["df"]
         if isinstance(df, (list, dict)):
             df = pd.DataFrame(df)
-        meta = _get_dataset_metadata(df)
+        eda_results = session.get("eda_results")
+        meta = _get_dataset_metadata(df, eda_results=eda_results)
 
         # 1. Detect business context (standalone LLM call)
         context = _detect_business_context(df, meta)
@@ -371,13 +560,26 @@ def run_insights(req: InsightsRequest):
         # 3. Generate charts
         charts = _generate_charts(df, meta, context)
 
+        # Add Python-generated correlation chart
+        corr_chart = _generate_correlation_chart(
+            df=df,
+            target_metric=context.get("target_metric", ""),
+            meta=meta,
+            avoid_cols=context.get("avoid_columns", [])
+        )
+        if corr_chart:
+            charts.append(corr_chart)
+
         # 4. Executive summary
         executive_summary = _generate_executive_summary(meta)
 
         # 5. AI bullet insights
         ai_insights = _generate_ai_insights(
-            context.get("domain", "general"),
-            context.get("business_entity", "row"),
+            domain=context.get("domain", "general"),
+            entity=context.get("business_entity", "row"),
+            kpis=kpis,
+            charts=charts,
+            meta=meta,
         )
 
         response_payload = {
@@ -395,28 +597,6 @@ def run_insights(req: InsightsRequest):
         }
 
         result_dict = clean_for_json(response_payload)
-
-        # Auto-generate Metabase dashboard (non-blocking background thread)
-        try:
-            import threading
-            from metabase.auto_dashboard import create_dashboard
-            _session_id = req.session_id
-            _filename = session.get("filename", "dataset.csv") if isinstance(session, dict) else getattr(session, "filename", "dataset.csv")
-            _domain = context.get("domain", "general")
-            def _create_dashboard():
-                url = create_dashboard(
-                    session_id=_session_id,
-                    filename=_filename,
-                    domain=_domain,
-                    insights=result_dict
-                )
-                if url:
-                    print(f"[Auto-Dashboard] Created: {url}")
-                else:
-                    print(f"[Auto-Dashboard] Creation returned None")
-            threading.Thread(target=_create_dashboard, daemon=True).start()
-        except Exception as e:
-            print(f"[Auto-Dashboard] Trigger failed (non-critical): {e}")
 
         update_session(req.session_id, "insights_results", result_dict)
 

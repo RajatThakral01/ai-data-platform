@@ -19,6 +19,8 @@ interface StoreState {
   setInsightsResults: (data: any) => void;
   nlHistory: any[];
   setNlHistory: (data: any[]) => void;
+  biHtmlResult: string | null;
+  setBiHtmlResult: (html: string | null) => void;
   setSessionId: (id: string | null) => void;
   setFilename: (name: string | null) => void;
   setColumns: (cols: string[]) => void;
@@ -39,6 +41,7 @@ export const StoreProvider = ({ children }: { children: ReactNode }) => {
   const [edaResults, setEdaResults] = useState(null as any | null);
   const [cleaningResults, setCleaningResults] = useState(null as any | null);
   const [mlResults, setMlResults] = useState(null as any | null);
+  const [biHtmlResult, setBiHtmlResult] = useState<string | null>(null);
   const [insightsResults, setInsightsResults] = useState(null as any | null);
   const [nlHistory, setNlHistory] = useState([] as any[]);
 
@@ -59,6 +62,8 @@ export const StoreProvider = ({ children }: { children: ReactNode }) => {
       insightsResults,
       setInsightsResults,
       nlHistory,
+      biHtmlResult,
+      setBiHtmlResult,
       setNlHistory,
       setSessionId,
       setFilename,

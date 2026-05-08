@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Inter, JetBrains_Mono, Syne } from "next/font/google";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 import Sidebar from "@/components/Sidebar";
@@ -15,9 +15,15 @@ const jetbrainsMono = JetBrains_Mono({
   variable: "--font-mono",
 });
 
+const syne = Syne({
+  subsets: ["latin"],
+  variable: "--font-display",
+  weight: ["700", "800"],
+});
+
 export const metadata: Metadata = {
-  title: "AI Data Platform",
-  description: "Next-gen context-aware business intelligence tool",
+  title: "Coldframe — Raw data → instant intelligence",
+  description: "Upload any CSV or Excel file. Get automated EDA, AI insights, NL querying, and a production-grade BI dashboard — zero code required.",
 };
 
 export default function RootLayout({
@@ -30,7 +36,8 @@ export default function RootLayout({
       <body className={cn(
         "min-h-screen bg-[var(--bg-primary)] font-sans antialiased text-[var(--text-primary)] selection:bg-[var(--accent-cyan)] selection:text-black flex",
         inter.variable,
-        jetbrainsMono.variable
+        jetbrainsMono.variable,
+        syne.variable
       )}>
         <StoreProvider>
           <Sidebar />

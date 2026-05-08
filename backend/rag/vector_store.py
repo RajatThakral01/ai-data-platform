@@ -4,30 +4,46 @@ vector_store.py - Supabase pgvector storage and retrieval with ChromaDB fallback
 import sys
 import os
 import logging
+import re
+import chromadb
+from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend")))
-try:
-    from db.supabase_client import get_supabase
-    _supabase_available = True
-except ImportError:
-    _supabase_available = False
 
 logger = logging.getLogger(__name__)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Runtime Supabase availability check
+# NOT import-time — avoids the race condition where vector_store is imported
+# before load_dotenv() runs in main.py, causing env vars to be missing.
+# ──────────────────────────────────────────────────────────────────────────────
+def _is_supabase_available() -> bool:
+    """Returns True if Supabase env vars are set and the package is importable."""
+    if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_KEY"):
+        return False
+    try:
+        from db.supabase_client import get_supabase  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
 
 def _batch(items: list[dict], size: int) -> list[list[dict]]:
     return [items[i:i + size] for i in range(0, len(items), size)]
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Supabase store / retrieve / delete
+# ──────────────────────────────────────────────────────────────────────────────
 def store_dataset(session_id: str, filename: str, chunks: list[dict]) -> bool:
-    """
-    Store chunk dicts in Supabase document_chunks table.
-    Each chunk dict contains: text, embedding, metadata, page_num.
-    """
-    if not _supabase_available:
+    """Store chunk dicts in Supabase document_chunks table."""
+    if not _is_supabase_available():
         logger.warning("Supabase unavailable, falling back to ChromaDB store_dataset.")
         return _chroma_store_dataset(session_id, filename, chunks)
 
     try:
+        from db.supabase_client import get_supabase
         supabase = get_supabase()
         if not supabase:
             logger.warning("Supabase client not available, falling back to ChromaDB store_dataset.")
@@ -41,15 +57,13 @@ def store_dataset(session_id: str, filename: str, chunks: list[dict]) -> bool:
 
         rows = []
         for chunk in chunks:
-            rows.append(
-                {
-                    "session_id": session_id,
-                    "chunk_text": chunk["text"],
-                    "embedding": chunk["embedding"],
-                    "page_num": chunk["page_num"],
-                    "metadata": chunk["metadata"],
-                }
-            )
+            rows.append({
+                "session_id": session_id,
+                "chunk_text": chunk["text"],
+                "embedding": chunk["embedding"],
+                "page_num": chunk["page_num"],
+                "metadata": chunk["metadata"],
+            })
 
         for batch in _batch(rows, 50):
             supabase.table("document_chunks").insert(batch).execute()
@@ -60,13 +74,15 @@ def store_dataset(session_id: str, filename: str, chunks: list[dict]) -> bool:
         logger.error(f"Failed to store dataset for session {session_id}: {e}")
         return False
 
+
 def retrieve(session_id: str, query_embedding: list[float], top_k: int = 5) -> list[dict]:
     """Retrieve top_k most similar chunks for a session via Supabase RPC."""
-    if not _supabase_available:
+    if not _is_supabase_available():
         logger.warning("Supabase unavailable, falling back to ChromaDB retrieve.")
         return _chroma_retrieve(session_id, query_embedding, top_k)
 
     try:
+        from db.supabase_client import get_supabase
         supabase = get_supabase()
         if not supabase:
             logger.warning("Supabase client not available, falling back to ChromaDB retrieve.")
@@ -94,17 +110,19 @@ def retrieve(session_id: str, query_embedding: list[float], top_k: int = 5) -> l
         logger.error(f"Failed to retrieve chunks for session {session_id}: {e}")
         return []
 
+
 def hybrid_search(
     session_id: str,
     query_embedding: list[float],
     keywords: list[str],
     top_k: int = 5,
 ) -> list[dict]:
-    if not _supabase_available:
+    if not _is_supabase_available():
         logger.warning("Supabase unavailable, falling back to ChromaDB retrieve.")
         return _chroma_retrieve(session_id, query_embedding, top_k)
 
     try:
+        from db.supabase_client import get_supabase
         supabase = get_supabase()
         if not supabase:
             logger.warning("Supabase client not available, falling back to ChromaDB retrieve.")
@@ -165,13 +183,15 @@ def hybrid_search(
         logger.error(f"Failed to hybrid search for session {session_id}: {e}")
         return []
 
+
 def delete_dataset(session_id: str) -> bool:
     """Delete all chunks for a session from Supabase."""
-    if not _supabase_available:
+    if not _is_supabase_available():
         logger.warning("Supabase unavailable, falling back to ChromaDB delete_dataset.")
         return _chroma_delete_dataset(session_id)
 
     try:
+        from db.supabase_client import get_supabase
         supabase = get_supabase()
         if not supabase:
             logger.warning("Supabase client not available, falling back to ChromaDB delete_dataset.")
@@ -183,137 +203,115 @@ def delete_dataset(session_id: str) -> bool:
         logger.error(f"Failed to delete chunks for session {session_id}: {e}")
         return False
 
-if not _supabase_available:
-    import chromadb
-    import re
-    from pathlib import Path
 
-    # Derive DB path to be in the project root
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    CHROMA_DB_DIR = PROJECT_ROOT / "chroma_db"
+# ──────────────────────────────────────────────────────────────────────────────
+# ChromaDB fallback — always defined, used when Supabase is unavailable
+# ──────────────────────────────────────────────────────────────────────────────
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CHROMA_DB_DIR = PROJECT_ROOT / "chroma_db"
 
-    def _get_client():
-        """Get or initialize the persistent ChromaDB client."""
-        return chromadb.PersistentClient(path=str(CHROMA_DB_DIR))
 
-    def _sanitize_name(name: str) -> str:
-        """
-        Sanitize dataset string to be a valid ChromaDB collection name.
-        Rules: 3-63 chars, start/end with alpha, contain numeric/alpha/hyphens/underscores/dots.
-        Consecutive dots/hyphens are not allowed, but we'll do a basic sanitization.
-        """
-        # Replace anything non-alphanumeric with underscores
-        sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
-        # Ensure it starts and ends with alphanumeric
-        sanitized = re.sub(r"^[^a-zA-Z0-9]+", "a_", sanitized)
-        sanitized = re.sub(r"[^a-zA-Z0-9]+$", "_z", sanitized)
-        # Length constraints
-        if len(sanitized) < 3:
-            sanitized = sanitized.ljust(3, "x")
-        if len(sanitized) > 63:
-            sanitized = sanitized[:63]
-        return sanitized
+def _get_client():
+    """Get or initialize the persistent ChromaDB client."""
+    return chromadb.PersistentClient(path=str(CHROMA_DB_DIR))
 
-    def _chroma_store_dataset(session_id: str, filename: str, chunks: list[dict]) -> bool:
-        """Fallback: store chunk text and embeddings into a ChromaDB collection."""
-        try:
-            if not chunks:
-                logger.warning(f"No chunks to store for dataset {filename}")
-                return False
 
-            client = _get_client()
-            collection_name = _sanitize_name(filename)
+def _sanitize_name(name: str) -> str:
+    """Sanitize a string to a valid ChromaDB collection name (3-63 chars, alphanumeric/hyphens/underscores)."""
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
+    sanitized = re.sub(r"^[^a-zA-Z0-9]+", "a_", sanitized)
+    sanitized = re.sub(r"[^a-zA-Z0-9]+$", "_z", sanitized)
+    if len(sanitized) < 3:
+        sanitized = sanitized.ljust(3, "x")
+    if len(sanitized) > 63:
+        sanitized = sanitized[:63]
+    return sanitized
 
-            collection = client.get_or_create_collection(
-                name=collection_name,
-                metadata={"filename": filename, "session_id": session_id},
-            )
 
-            ids = []
-            documents = []
-            embeddings = []
-            metadatas = []
-
-            for i, chunk in enumerate(chunks):
-                ids.append(f"{collection_name}_chunk_{i}")
-                documents.append(chunk["text"])
-                embeddings.append(chunk["embedding"])
-
-                # ChromaDB only allows str/int/float/bool metadata values.
-                # Serialize any list/dict values to strings before upsert.
-                raw_meta = chunk.get("metadata", {}) or {}
-                safe_meta = {}
-                for k, v in raw_meta.items():
-                    if isinstance(v, list):
-                        safe_meta[k] = ", ".join(str(x) for x in v)
-                    elif isinstance(v, dict):
-                        safe_meta[k] = str(v)
-                    elif isinstance(v, (str, int, float, bool)):
-                        safe_meta[k] = v
-                    else:
-                        safe_meta[k] = str(v)
-                metadatas.append(safe_meta)
-
-            collection.upsert(
-                ids=ids,
-                documents=documents,
-                embeddings=embeddings,
-                metadatas=metadatas,
-            )
-
-            logger.info(f"Stored {len(ids)} chunks in collection {collection_name}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to store dataset {filename} in ChromaDB: {e}")
+def _chroma_store_dataset(session_id: str, filename: str, chunks: list[dict]) -> bool:
+    """Fallback: store chunk text and embeddings into a ChromaDB collection."""
+    try:
+        if not chunks:
+            logger.warning(f"No chunks to store for dataset {filename}")
             return False
 
-    def _chroma_retrieve(session_id: str, query_embedding: list[float], top_k: int = 5) -> list[dict]:
-        """
-        Fallback: retrieve top_k most similar chunks from a dataset collection.
-        Returns list of dicts: {"document": text, "source": filename, "distance": float}
-        """
+        client = _get_client()
+        collection_name = _sanitize_name(filename)
+        collection = client.get_or_create_collection(
+            name=collection_name,
+            metadata={"filename": filename, "session_id": session_id},
+        )
+
+        ids, documents, embeddings, metadatas = [], [], [], []
+
+        for i, chunk in enumerate(chunks):
+            ids.append(f"{collection_name}_chunk_{i}")
+            documents.append(chunk["text"])
+            embeddings.append(chunk["embedding"])
+
+            # ChromaDB only allows str/int/float/bool — serialize lists/dicts
+            raw_meta = chunk.get("metadata", {}) or {}
+            safe_meta = {}
+            for k, v in raw_meta.items():
+                if isinstance(v, list):
+                    safe_meta[k] = ", ".join(str(x) for x in v)
+                elif isinstance(v, dict):
+                    safe_meta[k] = str(v)
+                elif isinstance(v, (str, int, float, bool)):
+                    safe_meta[k] = v
+                else:
+                    safe_meta[k] = str(v)
+            metadatas.append(safe_meta)
+
+        collection.upsert(ids=ids, documents=documents, embeddings=embeddings, metadatas=metadatas)
+        logger.info(f"Stored {len(ids)} chunks in ChromaDB collection {collection_name}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to store dataset {filename} in ChromaDB: {e}")
+        return False
+
+
+def _chroma_retrieve(session_id: str, query_embedding: list[float], top_k: int = 5) -> list[dict]:
+    """Fallback: retrieve top_k most similar chunks from ChromaDB."""
+    try:
+        client = _get_client()
+        collection_name = _sanitize_name(session_id)
         try:
-            client = _get_client()
-            collection_name = _sanitize_name(session_id)
-
-            try:
-                collection = client.get_collection(name=collection_name)
-            except Exception:
-                logger.warning(f"Collection {collection_name} does not exist.")
-                return []
-
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=min(top_k, collection.count()),
-            )
-
-            retrieved = []
-            if results and results.get("documents") and results["documents"][0]:
-                docs = results["documents"][0]
-                metadatas = results["metadatas"][0] if results.get("metadatas") else [{}] * len(docs)
-                distances = results["distances"][0] if results.get("distances") else [0.0] * len(docs)
-
-                for doc, meta, dist in zip(docs, metadatas, distances):
-                    retrieved.append(
-                        {
-                            "document": doc,
-                            "source": meta.get("source", session_id),
-                            "distance": dist,
-                        }
-                    )
-            return retrieved
-        except Exception as e:
-            logger.error(f"Failed to retrieve from {session_id}: {e}")
+            collection = client.get_collection(name=collection_name)
+        except Exception:
+            logger.warning(f"ChromaDB collection {collection_name} does not exist.")
             return []
 
-    def _chroma_delete_dataset(session_id: str) -> bool:
-        """Fallback: delete a dataset's collection from ChromaDB."""
-        try:
-            client = _get_client()
-            collection_name = _sanitize_name(session_id)
-            client.delete_collection(name=collection_name)
-            logger.info(f"Deleted collection {collection_name}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to delete dataset {session_id}: {e}")
-            return False
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=min(top_k, collection.count()),
+        )
+
+        retrieved = []
+        if results and results.get("documents") and results["documents"][0]:
+            docs = results["documents"][0]
+            metas = results["metadatas"][0] if results.get("metadatas") else [{}] * len(docs)
+            distances = results["distances"][0] if results.get("distances") else [0.0] * len(docs)
+            for doc, meta, dist in zip(docs, metas, distances):
+                retrieved.append({
+                    "document": doc,
+                    "source": meta.get("source", session_id),
+                    "distance": dist,
+                })
+        return retrieved
+    except Exception as e:
+        logger.error(f"Failed to retrieve from ChromaDB {session_id}: {e}")
+        return []
+
+
+def _chroma_delete_dataset(session_id: str) -> bool:
+    """Fallback: delete a dataset's collection from ChromaDB."""
+    try:
+        client = _get_client()
+        collection_name = _sanitize_name(session_id)
+        client.delete_collection(name=collection_name)
+        logger.info(f"Deleted ChromaDB collection {collection_name}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete ChromaDB dataset {session_id}: {e}")
+        return False

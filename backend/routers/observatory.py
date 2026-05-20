@@ -58,7 +58,7 @@ def get_stats():
 
         latency_over_time = [
             {
-                "timestamp": row.get("timestamp"),
+                "timestamp": row.get("timestamp") or row.get("created_at"),
                 "latency": float(row.get("latency_ms") or 0.0),
                 "model": row.get("model_used") or "unknown"
             }
@@ -68,7 +68,7 @@ def get_stats():
         return {
             "total_calls": total_calls,
             "success_rate": float(success_rate),
-            "avg_latency": float(avg_latency),
+            "avg_latency_ms": float(avg_latency),
             "fallback_rate": float(fallback_rate),
             "total_cost": 0.0,
             "calls_by_module": calls_by_module,
@@ -78,7 +78,7 @@ def get_stats():
         return {
             "total_calls": 0,
             "success_rate": 0.0,
-            "avg_latency": 0.0,
+            "avg_latency_ms": 0.0,
             "fallback_rate": 0.0,
             "total_cost": 0.0,
             "calls_by_module": [],
@@ -93,7 +93,7 @@ def get_logs(limit: int = 50):
         logs = get_all_logs(limit)
         return [
             {
-                "timestamp": row.get("timestamp"),
+                "timestamp": row.get("timestamp") or row.get("created_at"),
                 "module_name": row.get("module_name") or "unknown",
                 "model_used": row.get("model_used") or "unknown",
                 "latency_ms": float(row.get("latency_ms") or 0.0),

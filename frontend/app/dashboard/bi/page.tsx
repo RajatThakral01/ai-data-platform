@@ -159,7 +159,7 @@ export default function BIDashboardPage() {
               AI BI Dashboard
             </h1>
             <p className="text-sm text-[var(--text-muted)]">
-              Auto-generated with NVIDIA NIM — Kimi K2.6 / GLM-5.1 / Llama 4
+              Auto-generated with NVIDIA NIM — Llama 4 Maverick / Qwen2.5-Coder-32B
             </p>
           </div>
         </div>
@@ -392,7 +392,7 @@ export default function BIDashboardPage() {
             <div className="w-1.5 h-1.5 rounded-full
                             bg-[var(--accent-cyan)] animate-pulse" />
             <span className="text-xs text-[var(--text-muted)]">
-              Powered by NVIDIA NIM — MiniMax M2.7 / Llama 4 Maverick
+              Powered by NVIDIA NIM — Llama 4 Maverick / Qwen2.5-Coder-32B
             </span>
           </div>
         </div>
@@ -411,7 +411,7 @@ export default function BIDashboardPage() {
             </h3>
             <p className="text-sm text-[var(--text-muted)] leading-relaxed">
               Click <strong className="text-[var(--text-primary)]">Generate Dashboard</strong> and
-              DeepSeek V4 Flash will create a fully custom HTML dashboard with real charts
+              Llama 4 Maverick will create a fully custom HTML dashboard with real charts
               built specifically for <strong className="text-[var(--text-primary)]">{filename}</strong>.
             </p>
           </div>

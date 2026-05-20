@@ -20,12 +20,16 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 def _is_supabase_available() -> bool:
     """Returns True if Supabase env vars are set and the package is importable."""
-    if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_KEY"):
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+    if not url or not key:
+        print(f"DEBUG: Supabase env vars missing. URL: {'SET' if url else 'MISSING'}, KEY: {'SET' if key else 'MISSING'}")
         return False
     try:
         from db.supabase_client import get_supabase  # noqa: F401
         return True
-    except ImportError:
+    except ImportError as e:
+        print(f"DEBUG: Supabase import failed: {e}")
         return False
 
 
@@ -297,6 +301,7 @@ def _chroma_retrieve(session_id: str, query_embedding: list[float], top_k: int =
                     "document": doc,
                     "source": meta.get("source", session_id),
                     "distance": dist,
+                    "metadata": meta,  # fix: expose metadata for RAG page numbering
                 })
         return retrieved
     except Exception as e:

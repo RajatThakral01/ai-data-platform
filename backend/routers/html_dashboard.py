@@ -4,10 +4,12 @@ from session_store import get_session, update_session
 import httpx
 import os
 import json
+import time
 import pandas as pd
 from typing import Optional
 
 from utils.chart_planner import build_plan
+from utils.llm_logger import log_call
 
 router = APIRouter()
 
@@ -189,10 +191,8 @@ async def _call_nvidia_nim(prompt: str) -> str:
         raise HTTPException(status_code=500, detail="NVIDIA_NIM_API_KEY is not configured in .env")
 
     models_to_try = [
-        "minimaxai/minimax-m2.7",
         "meta/llama-4-maverick-17b-128e-instruct",
-        "meta/llama-4-scout-17b-16e-instruct",
-        "mistralai/mistral-small-3.1-24b-instruct",
+        "qwen/qwen2.5-coder-32b-instruct",
     ]
 
     last_error = ""
@@ -200,45 +200,25 @@ async def _call_nvidia_nim(prompt: str) -> str:
     for model in models_to_try:
         try:
             print(f"=== Trying model: {model} ===")
-            # MiniMax M2.7 has specific recommended parameters
-            if "minimax" in model:
-                payload = {
-                    "model": model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are an expert BI dashboard developer who writes flawless single-file HTML dashboards. "
-                                "You ONLY output raw HTML starting with <!DOCTYPE html> and ending with </html>. "
-                                "No markdown, no code fences, no commentary — only the HTML file itself."
-                            ),
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": 8000,
-                    "temperature": 1.0,
-                    "top_p": 0.95,
-                    "top_k": 40,
-                }
-            else:
-                payload = {
-                    "model": model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are an expert BI dashboard developer who writes flawless single-file HTML dashboards. "
-                                "You ONLY output raw HTML starting with <!DOCTYPE html> and ending with </html>. "
-                                "No markdown, no code fences, no commentary — only the HTML file itself."
-                            ),
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": 8000,
-                    "temperature": 0.25,
-                }
+            payload = {
+                "model": model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert BI dashboard developer who writes flawless single-file HTML dashboards. "
+                            "You ONLY output raw HTML starting with <!DOCTYPE html> and ending with </html>. "
+                            "No markdown, no code fences, no commentary — only the HTML file itself."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": 8000,
+                "temperature": 0.25,
+            }
 
-            async with httpx.AsyncClient(timeout=300.0) as client:
+            start_time = time.time()
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
                     "https://integrate.api.nvidia.com/v1/chat/completions",
                     headers={
@@ -251,26 +231,71 @@ async def _call_nvidia_nim(prompt: str) -> str:
             print(f"=== NIM STATUS for {model}: {response.status_code} ===")
 
             if response.status_code == 200:
+                latency_ms = int((time.time() - start_time) * 1000)
                 content = response.json()["choices"][0]["message"]["content"].strip()
                 if content.startswith("```"):
                     lines = content.split("\n")
                     content = "\n".join(lines[1:])
                     if content.endswith("```"):
                         content = content[:-3].strip()
+                log_call(
+                    module_name="bi_dashboard",
+                    model_used=model,
+                    latency_ms=latency_ms,
+                    prompt=None,
+                    response=None,
+                    success=True,
+                    fallback_used=False,
+                    error_message=None,
+                    session_id=None,
+                )
                 print(f"=== SUCCESS with model: {model} ===")
                 return content
             else:
                 last_error = f"{model}: {response.status_code} {response.text[:200]}"
                 print(f"=== FAILED {model}: {response.status_code} ===")
+                log_call(
+                    module_name="bi_dashboard",
+                    model_used=model,
+                    latency_ms=int((time.time() - start_time) * 1000),
+                    prompt=None,
+                    response=None,
+                    success=False,
+                    fallback_used=False,
+                    error_message=last_error,
+                    session_id=None,
+                )
                 continue
 
         except httpx.ReadTimeout:
             last_error = f"{model}: ReadTimeout"
             print(f"=== TIMEOUT on model: {model}, trying next ===")
+            log_call(
+                module_name="bi_dashboard",
+                model_used=model,
+                latency_ms=120000,
+                prompt=None,
+                response=None,
+                success=False,
+                fallback_used=False,
+                error_message=last_error,
+                session_id=None,
+            )
             continue
         except Exception as e:
             last_error = f"{model}: {str(e)}"
             print(f"=== ERROR on model: {model}: {e} ===")
+            log_call(
+                module_name="bi_dashboard",
+                model_used=model,
+                latency_ms=0,
+                prompt=None,
+                response=None,
+                success=False,
+                fallback_used=False,
+                error_message=last_error,
+                session_id=None,
+            )
             continue
 
     raise HTTPException(
@@ -296,10 +321,8 @@ async def _call_nim_focused(
         )
 
     models_to_try = [
-        "moonshotai/kimi-k2.6",
-        "z-ai/glm-5.1",
-        "z-ai/glm-4.7",
         "meta/llama-4-maverick-17b-128e-instruct",
+        "qwen/qwen2.5-coder-32b-instruct",
     ]
 
     last_error = ""
@@ -314,21 +337,10 @@ async def _call_nim_focused(
                 "max_tokens":  max_tokens,
             }
 
-            if "kimi" in model or "minimax" in model:
-                payload["temperature"] = 1.0
-                payload["top_p"]       = 1.0
-            elif "glm" in model:
-                payload["temperature"]            = 0.2
-                payload["chat_template_kwargs"]   = {"thinking": False}
-            else:
-                payload["temperature"] = 0.2
+            payload["temperature"] = 0.2
 
-            if "kimi" in model or "minimax" in model:
-                timeout = 90.0
-            elif "glm" in model:
-                timeout = 120.0
-            else:
-                timeout = 300.0
+            timeout = 120.0
+            start_time = time.time()
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
                     "https://integrate.api.nvidia.com/v1/chat/completions",
@@ -340,23 +352,68 @@ async def _call_nim_focused(
                 )
 
             if response.status_code == 200:
+                latency_ms = int((time.time() - start_time) * 1000)
                 content = response.json()["choices"][0]["message"]["content"].strip()
                 if content.startswith("```"):
                     lines = content.split("\n")
                     content = "\n".join(lines[1:])
                     if content.endswith("```"):
                         content = content[:-3].strip()
+                log_call(
+                    module_name="bi_dashboard",
+                    model_used=model,
+                    latency_ms=latency_ms,
+                    prompt=None,
+                    response=None,
+                    success=True,
+                    fallback_used=False,
+                    error_message=None,
+                    session_id=None,
+                )
                 return content
 
             last_error = f"{model}: {response.status_code}"
+            log_call(
+                module_name="bi_dashboard",
+                model_used=model,
+                latency_ms=int((time.time() - start_time) * 1000),
+                prompt=None,
+                response=None,
+                success=False,
+                fallback_used=False,
+                error_message=last_error,
+                session_id=None,
+            )
             continue
 
         except httpx.ReadTimeout:
             last_error = f"{model}: timeout"
             print(f"=== TIMEOUT {model} ===")
+            log_call(
+                module_name="bi_dashboard",
+                model_used=model,
+                latency_ms=120000,
+                prompt=None,
+                response=None,
+                success=False,
+                fallback_used=False,
+                error_message=last_error,
+                session_id=None,
+            )
             continue
         except Exception as e:
             last_error = f"{model}: {str(e)}"
+            log_call(
+                module_name="bi_dashboard",
+                model_used=model,
+                latency_ms=0,
+                prompt=None,
+                response=None,
+                success=False,
+                fallback_used=False,
+                error_message=last_error,
+                session_id=None,
+            )
             continue
 
     raise HTTPException(
@@ -691,7 +748,7 @@ DATA FORMAT:
 async def generate_bi_dashboard(req: BIDashboardRequest):
     """
     Generate a fully custom HTML BI dashboard for the uploaded dataset
-    using NVIDIA NIM (DeepSeek V4 Flash). Returns raw HTML to render in frontend.
+    using NVIDIA NIM (Llama 4 Maverick / Qwen2.5-Coder-32B). Returns raw HTML to render in frontend.
     """
     session = get_session(req.session_id)
     if not session or "df" not in session:

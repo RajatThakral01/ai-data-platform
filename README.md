@@ -34,7 +34,8 @@ Built for data analysts, product managers, and non-technical decision-makers who
 | 💡 **AI Insights Engine** | Business-context-aware insights with KPIs, charts, and executive summary |
 | 🗣️ **NL Query Engine** | Ask questions in plain English — gets converted to pandas and executed |
 | 🤖 **ML Recommender** | Suggests optimal ML algorithm based on data shape and target variable |
-| 📈 **AI BI Dashboard** | Auto-generated, domain-specific HTML dashboards via NVIDIA NIM multi-call architecture |
+| 📈 **AI BI Dashboard** | Auto-generated, domain-specific HTML dashboards via NVIDIA NIM — Llama 4 Maverick / Qwen2.5-Coder-32B |
+| 📋 **PDF Report** | Auto-generated multi-page PDF with 4 embedded charts (correlation matrix, missing values, distributions, categorical breakdown) + AI insights |
 | 🔁 **Multi-Tier LLM Routing** | Groq → Gemini → Ollama with automatic failover for core modules |
 | 🧠 **Smart Chart Planner** | Domain-aware chart decision engine using business questions library |
 | ✅ **167/167 Tests Passing** | Fully tested across all modules |
@@ -80,8 +81,8 @@ Built for data analysts, product managers, and non-technical decision-makers who
   │   Python: Assembly + Table  (no LLM)        │
   │                                             │
   │   Model Chain (fallback):                   │
-  │   Kimi K2.6 → GLM-5.1 → GLM-4.7            │
-  │   → Llama 4 Maverick                        │
+  │   Llama 4 Maverick                          │
+  │   → Qwen2.5-Coder-32B                       │
   └──────────────────┬──────────────────────────┘
                      │
                      ▼
@@ -198,13 +199,9 @@ Python Assembly      → Injects JS into placeholder
 
 #### NVIDIA NIM Model Chain
 ```
-Kimi K2.6           (primary — best frontend design, 58.6% SWE-Bench Pro)
-    ↓ timeout (90s)
-GLM-5.1             (secondary — top coding benchmark, UI-specialized)
+Llama 4 Maverick    (primary — fast, reliable, proven)
     ↓ timeout (120s)
-GLM-4.7             (tertiary — agentic coding + UI skills)
-    ↓ timeout
-Llama 4 Maverick    (reliable fallback — proven working, always fast)
+Qwen2.5-Coder-32B   (fallback — coding-specialized, excellent HTML/JS output)
 ```
 
 #### Dashboard Output
@@ -218,14 +215,28 @@ Llama 4 Maverick    (reliable fallback — proven working, always fast)
 
 ---
 
-### 6. 🔁 LLM Routing
+### 6. 📋 PDF Report Generator
+Generates a multi-page, publication-quality PDF analysis report.
+
+**Key Features:**
+- **Executive Summary**: 2-sentence dataset overview referencing specific metrics and numbers.
+- **Key Insights**: AI-generated context-rich analysis with bullet points.
+- **Data Visualizations**: 4 auto-embedded matplotlib charts (Correlation Matrix, Missing Values, Distribution of key numeric column, Categorical breakdown).
+- **Sanitized Output**: Unicode/emoji sanitization via Latin-1 encoding filter to prevent generation errors.
+
+---
+
+### 7. 🔁 LLM Routing
 
 **Core Modules** (EDA narration, NL Query, ML, Insights):
 ```
-Request ──► Groq (primary — fastest, Llama 3.3-70B / 3.1-8B)
+Request ──► Groq 70b (primary — fastest, Llama 3.3-70B)
               │ (if rate-limited)
               ▼
-           Gemini (secondary — gemini-2.0-flash)
+           Groq 8b  (secondary — Llama 3.1-8B, separate daily quota)
+              │ (if rate-limited)
+              ▼
+           Gemini (tertiary — gemini-2.0-flash)
               │ (if quota exceeded)
               ▼
            Ollama (local fallback — mistral/llama3)
@@ -233,12 +244,12 @@ Request ──► Groq (primary — fastest, Llama 3.3-70B / 3.1-8B)
 
 **BI Dashboard** (NVIDIA NIM — separate from core chain):
 ```
-Kimi K2.6 → GLM-5.1 → GLM-4.7 → Llama 4 Maverick
+Llama 4 Maverick → Qwen2.5-Coder-32B
 ```
 
 ---
 
-### 7. 🧪 Test Suite
+### 8. 🧪 Test Suite
 167 tests across all modules ensuring reliability at every layer:
 - `test_data_loader.py` — pandas safety and ingestion
 - `test_nl_query.py` — text-to-code parser
@@ -337,7 +348,7 @@ ai-data-platform/
 │   │   ├── ml.py               # ML model recommender
 │   │   ├── cleaning.py         # Automated data cleaning
 │   │   ├── report.py           # PDF report generation
-│   │   ├── observatory.py      # Usage tracking + latency monitoring
+│   │   ├── observatory.py      # Usage tracking + latency monitoring (now tracks all modules including bi_dashboard)
 │   │   └── export.py           # CSV export
 │   ├── utils/
 │   │   ├── domain_mapper.py    # Fuzzy column → semantic role matching
@@ -362,7 +373,7 @@ ai-data-platform/
 │   │       ├── ml/             # ML Recommender page
 │   │       ├── cleaning/       # Data Cleaning page
 │   │       ├── report/         # Report Generator page
-│   │       └── observatory/    # Observatory page
+│   │       └── observatory/    # Observatory page (with full bi_dashboard latency tracking)
 │   ├── components/
 │   │   └── Sidebar.tsx         # Navigation
 │   ├── lib/
@@ -382,7 +393,7 @@ ai-data-platform/
 | **Frontend** | Next.js 14 (App Router), React, Tailwind CSS, ShadcnUI |
 | **Backend** | FastAPI, Python 3.10, Pydantic |
 | **Core LLM Providers** | Groq (Llama 3.3-70B), Gemini (2.0-flash), Ollama (local) |
-| **BI Dashboard LLMs** | NVIDIA NIM — Kimi K2.6, GLM-5.1, GLM-4.7, Llama 4 Maverick |
+| **BI Dashboard LLMs** | NVIDIA NIM — Llama 4 Maverick / Qwen2.5-Coder-32B |
 | **Chart Generation** | Chart.js 4.4 (via CDN, rendered in sandboxed iframe) |
 | **Data Visualization** | Plotly.js, ECharts, Recharts (Insights page) |
 | **Session Storage** | Redis (production) / In-memory dict (local) |

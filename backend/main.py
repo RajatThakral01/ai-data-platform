@@ -12,10 +12,14 @@ possible_env_paths = [
 ]
 for env_path in possible_env_paths:
     if os.path.exists(env_path):
-        load_dotenv(env_path)
-        print(f"Loaded .env from: {env_path}")
+        load_dotenv(env_path, override=True)
+        print(f"Loaded .env from: {env_path} (override=True)")
         env_loaded = True
         break
+
+# Force disable ChromaDB telemetry due to posthog bug
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["CHROMA_TELEMETRY"] = "False"
 
 if not env_loaded:
     print("WARNING: No .env file found in any location")
@@ -31,9 +35,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "*",
         os.getenv("FRONTEND_URL", "http://localhost:3000"),
     ],
-    allow_credentials=True,
+    allow_credentials=False,  # Must be False if allow_origins includes '*'
     allow_methods=["*"],
     allow_headers=["*"],
 )

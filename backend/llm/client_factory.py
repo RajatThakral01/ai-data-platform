@@ -154,12 +154,17 @@ def get_llm_response(
             ``fallback_warning`` – user-facing warning string or ``None``.
             ``backends_tried``   – list of backends attempted.
     """
-    # Priority chain with chosen Groq model
+    # Build chain: try large Groq model first, then small (separate quota), then Gemini, then Ollama
+    groq_small = GROQ_MODEL_SMALL if groq_model != GROQ_MODEL_SMALL else None
     chain: list[tuple[str, str]] = [
         (BACKEND_GROQ, groq_model),
+    ]
+    if groq_small:
+        chain.append((BACKEND_GROQ, groq_small))
+    chain.extend([
         (BACKEND_GEMINI, DEFAULT_GEMINI_MODEL),
         (BACKEND_OLLAMA, "mistral"),
-    ]
+    ])
 
     errors: list[tuple[str, str, str]] = []
 

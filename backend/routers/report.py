@@ -3,12 +3,192 @@ from fastapi.responses import Response
 from session_store import get_session
 import pandas as pd
 from fpdf import FPDF
+import matplotlib
+import matplotlib.pyplot as plt
+import io
+import tempfile
+import os
+import numpy as np
+import logging
 
-def safe_text(text):
-    """Convert text to latin-1 to remove unsupported Unicode characters."""
-    return str(text).encode('latin-1', errors='replace').decode('latin-1')
+logger = logging.getLogger(__name__)
+
 
 router = APIRouter()
+
+
+# ── Chart generation helpers ──────────────────────────────────────────────────
+
+import re as _re
+
+def _safe_text(text: str, max_chars: int = 2000) -> str:
+    """Truncate and sanitize text for FPDF latin-1 rendering.
+    Strips emoji, non-latin1 characters, control chars, and markdown asterisks.
+    """
+    if not text:
+        return ""
+    text = str(text)[:max_chars]
+    # Drop characters not representable in latin-1
+    text = text.encode('latin-1', errors='ignore').decode('latin-1')
+    # Remove control characters and other problem bytes
+    text = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\*]', '', text)
+    return text.strip()
+
+
+def _generate_chart_image(fig) -> bytes:
+    """Convert matplotlib figure to PNG bytes."""
+    import matplotlib
+    try:
+        matplotlib.use('Agg')
+    except Exception:
+        pass
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight',
+                facecolor='#1a1a2e', edgecolor='none')
+    buf.seek(0)
+    data = buf.read()
+    plt.close(fig)
+    return data
+
+
+def _build_charts_from_session(session_data: dict) -> list:
+    """
+    Generate chart PNG bytes from EDA + session data.
+    Returns list of dicts: {title, img_bytes, insight}
+    """
+    charts = []
+    df = session_data.get("df")
+    if isinstance(df, (list, dict)):
+        df = pd.DataFrame(df)
+    eda = session_data.get("eda_results") or {}
+
+    # --- Chart 1: Correlation heatmap ---
+    try:
+        if df is not None:
+            numeric_df = df.select_dtypes(include='number')
+            if len(numeric_df.columns) >= 2:
+                # Drop zero-variance columns (they produce all-NaN rows/cols)
+                numeric_df = numeric_df.loc[:, numeric_df.std() > 0]
+                corr_matrix = numeric_df.corr()
+                # Drop any remaining all-NaN rows/cols
+                corr_matrix = corr_matrix.dropna(axis=0, how='all').dropna(axis=1, how='all')
+                cols = list(corr_matrix.columns[:8])
+                if len(cols) < 2:
+                    raise ValueError("Not enough valid columns for correlation matrix")
+                corr_matrix = corr_matrix.loc[cols, cols]
+                fig, ax = plt.subplots(figsize=(7, 5))
+                fig.patch.set_facecolor('#1a1a2e')
+                ax.set_facecolor('#16213e')
+                im = ax.imshow(corr_matrix.values, cmap='coolwarm',
+                               aspect='auto', vmin=-1, vmax=1)
+                ax.set_xticks(range(len(cols)))
+                ax.set_yticks(range(len(cols)))
+                ax.set_xticklabels(cols, rotation=45, ha='right',
+                                   color='white', fontsize=8)
+                ax.set_yticklabels(cols, color='white', fontsize=8)
+                for i in range(len(cols)):
+                    for j in range(len(cols)):
+                        ax.text(j, i, f"{corr_matrix.values[i,j]:.2f}",
+                                ha='center', va='center', color='white', fontsize=7)
+                plt.colorbar(im, ax=ax)
+                ax.set_title('Feature Correlation Matrix', color='white',
+                             fontsize=12, pad=10)
+                charts.append({
+                    "title": "Feature Correlation Matrix",
+                    "img_bytes": _generate_chart_image(fig),
+                    "insight": "Darker red/blue cells indicate strong positive/negative correlations between features."
+                })
+    except Exception as e:
+        logger.warning(f"[CHART BUILD ERROR] Chart 1 (Correlation): {type(e).__name__}: {e}")
+
+    # --- Chart 2: Missing values bar chart ---
+    try:
+        missing = eda.get("missing", {})
+        if missing:
+            miss_items = {k: v for k, v in missing.items() if v > 0}
+            if miss_items:
+                chart_height = max(3, min(8, len(miss_items) * 0.6 + 1))
+                fig, ax = plt.subplots(figsize=(7, chart_height))
+                fig.patch.set_facecolor('#1a1a2e')
+                ax.set_facecolor('#16213e')
+                ax.barh(list(miss_items.keys()), list(miss_items.values()),
+                        color='#e74c3c')
+                ax.set_xlabel('Missing %', color='white')
+                ax.tick_params(colors='white')
+                ax.spines[:].set_color('#333')
+                ax.set_title('Missing Value % by Column', color='white', fontsize=12)
+                charts.append({
+                    "title": "Missing Values by Column",
+                    "img_bytes": _generate_chart_image(fig),
+                    "insight": "Columns with high missing rates may need imputation or removal before modeling."
+                })
+    except Exception as e:
+        logger.warning(f"[CHART BUILD ERROR] Chart 2 (Missing Values): {type(e).__name__}: {e}")
+
+    # --- Chart 3: Distribution of key numeric column ---
+    try:
+        if df is not None:
+            numeric_cols = df.select_dtypes(include='number').columns
+            target_hints = ['churn', 'revenue', 'salary', 'amount', 'score',
+                            'charges', 'price']
+            col = next((c for c in numeric_cols
+                        if any(h in c.lower() for h in target_hints)), None)
+            if col is None and len(numeric_cols) > 0:
+                col = numeric_cols[0]
+            if col:
+                fig, ax = plt.subplots(figsize=(7, 4))
+                fig.patch.set_facecolor('#1a1a2e')
+                ax.set_facecolor('#16213e')
+                ax.hist(df[col].dropna(), bins=30, color='#00d4ff',
+                        edgecolor='#0a0a1a', alpha=0.85)
+                ax.set_xlabel(col, color='white')
+                ax.set_ylabel('Count', color='white')
+                ax.tick_params(colors='white')
+                ax.spines[:].set_color('#333')
+                ax.set_title(f'Distribution of {col}', color='white', fontsize=12)
+                charts.append({
+                    "title": f"Distribution of {col}",
+                    "img_bytes": _generate_chart_image(fig),
+                    "insight": f"Distribution of {col} shows the spread and skew of this key metric."
+                })
+    except Exception as e:
+        logger.warning(f"[CHART BUILD ERROR] Chart 3 (Distribution): {type(e).__name__}: {e}")
+
+    # --- Chart 4: Top categorical breakdown ---
+    try:
+        if df is not None:
+            cat_hints = ['contract', 'payment', 'internet', 'gender', 'plan',
+                         'segment', 'region', 'type']
+            cat_cols = df.select_dtypes(include='object').columns
+            col = next((c for c in cat_cols
+                        if any(h in c.lower() for h in cat_hints)), None)
+            if col is None and len(cat_cols) > 0:
+                col = cat_cols[0]
+            if col:
+                vc = df[col].value_counts().head(8)
+                fig, ax = plt.subplots(figsize=(7, 4))
+                fig.patch.set_facecolor('#1a1a2e')
+                ax.set_facecolor('#16213e')
+                colors = ['#00d4ff', '#7c3aed', '#10b981', '#f59e0b',
+                          '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16']
+                ax.bar(vc.index, vc.values, color=colors[:len(vc)])
+                ax.set_xlabel(col, color='white')
+                ax.set_ylabel('Count', color='white')
+                ax.tick_params(colors='white', axis='both')
+                plt.xticks(rotation=30, ha='right')
+                ax.spines[:].set_color('#333')
+                ax.set_title(f'Customer Breakdown by {col}', color='white',
+                             fontsize=12)
+                charts.append({
+                    "title": f"Breakdown by {col}",
+                    "img_bytes": _generate_chart_image(fig),
+                    "insight": f"Distribution of customers across {col} categories."
+                })
+    except Exception as e:
+        logger.warning(f"[CHART BUILD ERROR] Chart 4 (Categorical): {type(e).__name__}: {e}")
+
+    return charts
+
 
 
 @router.post("/report")
@@ -309,7 +489,7 @@ async def generate_report(body: dict):
     # Title
     pdf.set_font("Helvetica", "B", 20)
     pdf.set_text_color(0, 85, 204)
-    pdf.cell(0, 12, safe_text("AI Data Analysis Report"), ln=True)
+    pdf.cell(0, 12, _safe_text("AI Data Analysis Report"), ln=True)
     pdf.ln(4)
 
     # Meta info
@@ -318,18 +498,18 @@ async def generate_report(body: dict):
     pdf.set_fill_color(240, 247, 255)
     pdf.rect(15, pdf.get_y(), 180, 28, "F")
     pdf.set_x(18)
-    pdf.cell(0, 7, safe_text(f"Dataset: {filename}"), ln=True)
+    pdf.cell(0, 7, _safe_text(f"Dataset: {filename}"), ln=True)
     pdf.set_x(18)
-    pdf.cell(0, 7, safe_text(f"Rows: {len(df):,}   |   Columns: {len(df.columns)}"), ln=True)
+    pdf.cell(0, 7, _safe_text(f"Rows: {len(df):,}   |   Columns: {len(df.columns)}"), ln=True)
     pdf.set_x(18)
-    pdf.cell(0, 7, safe_text(f"Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}"), ln=True)
+    pdf.cell(0, 7, _safe_text(f"Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}"), ln=True)
     pdf.ln(6)
 
     def section_header(pdf, title, r, g, b):
         pdf.set_fill_color(r, g, b)
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("Helvetica", "B", 12)
-        pdf.cell(0, 9, safe_text(f"  {title}"), ln=True, fill=True)
+        pdf.cell(0, 9, _safe_text(f"  {title}"), ln=True, fill=True)
         pdf.set_text_color(50, 50, 50)
         pdf.ln(2)
 
@@ -340,9 +520,9 @@ async def generate_report(body: dict):
         col_width = 175 / max(len(cols) + 1, 2)
         # Header row
         pdf.set_x(15)
-        pdf.cell(col_width, 7, safe_text("Index"), border=1, fill=True)
+        pdf.cell(col_width, 7, _safe_text("Index"), border=1, fill=True)
         for col in cols:
-            pdf.cell(col_width, 7, safe_text(str(col)[:15]), border=1, fill=True)
+            pdf.cell(col_width, 7, _safe_text(str(col)[:15]), border=1, fill=True)
         pdf.ln()
         # Data rows
         pdf.set_font("Helvetica", "", 8)
@@ -352,9 +532,9 @@ async def generate_report(body: dict):
             fill = i % 2 == 0
             pdf.set_fill_color(250, 250, 250) if fill else pdf.set_fill_color(255, 255, 255)
             pdf.set_x(15)
-            pdf.cell(col_width, 6, safe_text(str(idx)[:15]), border=1, fill=fill)
+            pdf.cell(col_width, 6, _safe_text(str(idx)[:15]), border=1, fill=fill)
             for val in row:
-                pdf.cell(col_width, 6, safe_text(str(round(val, 2) if isinstance(val, float) else val)[:15]), border=1, fill=fill)
+                pdf.cell(col_width, 6, _safe_text(str(round(val, 2) if isinstance(val, float) else val)[:15]), border=1, fill=fill)
             pdf.ln()
         pdf.ln(4)
 
@@ -363,18 +543,18 @@ async def generate_report(body: dict):
     pdf.set_font("Helvetica", "B", 9)
     pdf.set_fill_color(245, 245, 245)
     pdf.set_x(15)
-    pdf.cell(80, 7, safe_text("Column"), border=1, fill=True)
-    pdf.cell(50, 7, safe_text("Type"), border=1, fill=True)
-    pdf.cell(45, 7, safe_text("Unique Values"), border=1, fill=True)
+    pdf.cell(80, 7, _safe_text("Column"), border=1, fill=True)
+    pdf.cell(50, 7, _safe_text("Type"), border=1, fill=True)
+    pdf.cell(45, 7, _safe_text("Unique Values"), border=1, fill=True)
     pdf.ln()
     pdf.set_font("Helvetica", "", 9)
     for i, col in enumerate(df.columns):
         fill = i % 2 == 0
         pdf.set_fill_color(250, 250, 250) if fill else pdf.set_fill_color(255, 255, 255)
         pdf.set_x(15)
-        pdf.cell(80, 6, safe_text(str(col)[:35]), border=1, fill=fill)
-        pdf.cell(50, 6, safe_text(str(df[col].dtype)), border=1, fill=fill)
-        pdf.cell(45, 6, safe_text(str(df[col].nunique())), border=1, fill=fill)
+        pdf.cell(80, 6, _safe_text(str(col)[:35]), border=1, fill=fill)
+        pdf.cell(50, 6, _safe_text(str(df[col].dtype)), border=1, fill=fill)
+        pdf.cell(45, 6, _safe_text(str(df[col].nunique())), border=1, fill=fill)
         pdf.ln()
     pdf.ln(6)
 
@@ -385,12 +565,12 @@ async def generate_report(body: dict):
     total_missing = df.isnull().sum().sum()
     dupes = df.duplicated().sum()
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 7, safe_text(f"Total Missing Cells: {total_missing:,}   |   Missing Rate: {total_missing/df.size*100:.1f}%   |   Duplicate Rows: {dupes:,}"), ln=True)
+    pdf.cell(0, 7, _safe_text(f"Total Missing Cells: {total_missing:,}   |   Missing Rate: {total_missing/df.size*100:.1f}%   |   Duplicate Rows: {dupes:,}"), ln=True)
     pdf.ln(2)
     if len(missing) > 0:
         add_dataframe_table(pdf, missing.to_frame("Missing Count"))
     else:
-        pdf.cell(0, 7, safe_text("No missing values found."), ln=True)
+        pdf.cell(0, 7, _safe_text("No missing values found."), ln=True)
     pdf.ln(4)
 
     # SECTION 3: Statistics
@@ -404,41 +584,41 @@ async def generate_report(body: dict):
         narrative = eda_results.get("narrative", "")
         if narrative:
             pdf.set_font("Helvetica", "I", 9)
-            pdf.multi_cell(180, 5, safe_text(narrative[:800]))
+            pdf.multi_cell(180, 5, _safe_text(narrative[:800]))
             pdf.ln(4)
 
     # SECTION 5: Cleaning (if available)
     if cleaned_df is not None:
         section_header(pdf, "5. Data Cleaning Summary", 199, 149, 10)
         pdf.set_font("Helvetica", "", 10)
-        pdf.cell(0, 7, safe_text(f"Rows before: {len(df):,}  ->  After: {len(cleaned_df):,}"), ln=True)
-        pdf.cell(0, 7, safe_text(f"Missing before: {df.isnull().sum().sum():,}  ->  After: {cleaned_df.isnull().sum().sum():,}"), ln=True)
+        pdf.cell(0, 7, _safe_text(f"Rows before: {len(df):,}  ->  After: {len(cleaned_df):,}"), ln=True)
+        pdf.cell(0, 7, _safe_text(f"Missing before: {df.isnull().sum().sum():,}  ->  After: {cleaned_df.isnull().sum().sum():,}"), ln=True)
         pdf.ln(4)
 
     # SECTION 6: ML Results (if available)
     if ml_results:
         section_header(pdf, "6. ML Results", 192, 57, 43)
         pdf.set_font("Helvetica", "", 10)
-        pdf.cell(0, 7, safe_text(f"Task Type: {ml_results.get('task_type', '')}"), ln=True)
-        pdf.cell(0, 7, safe_text(f"Best Model: {ml_results.get('best_model', '')}"), ln=True)
+        pdf.cell(0, 7, _safe_text(f"Task Type: {ml_results.get('task_type', '')}"), ln=True)
+        pdf.cell(0, 7, _safe_text(f"Best Model: {ml_results.get('best_model', '')}"), ln=True)
         pdf.ln(2)
         models = ml_results.get("models", [])
         if models:
             pdf.set_font("Helvetica", "B", 9)
             pdf.set_fill_color(245, 245, 245)
             pdf.set_x(15)
-            pdf.cell(90, 7, safe_text("Model"), border=1, fill=True)
-            pdf.cell(50, 7, safe_text("Score"), border=1, fill=True)
-            pdf.cell(45, 7, safe_text("Time (ms)"), border=1, fill=True)
+            pdf.cell(90, 7, _safe_text("Model"), border=1, fill=True)
+            pdf.cell(50, 7, _safe_text("Score"), border=1, fill=True)
+            pdf.cell(45, 7, _safe_text("Time (ms)"), border=1, fill=True)
             pdf.ln()
             pdf.set_font("Helvetica", "", 9)
             for i, m in enumerate(models):
                 fill = i % 2 == 0
                 pdf.set_fill_color(250, 250, 250) if fill else pdf.set_fill_color(255, 255, 255)
                 pdf.set_x(15)
-                pdf.cell(90, 6, safe_text(str(m.get("name", ""))[:40]), border=1, fill=fill)
-                pdf.cell(50, 6, safe_text(str(round(m.get("score", 0), 4))), border=1, fill=fill)
-                pdf.cell(45, 6, safe_text(str(m.get("training_time_ms", ""))), border=1, fill=fill)
+                pdf.cell(90, 6, _safe_text(str(m.get("name", ""))[:40]), border=1, fill=fill)
+                pdf.cell(50, 6, _safe_text(str(round(m.get("score", 0), 4))), border=1, fill=fill)
+                pdf.cell(45, 6, _safe_text(str(m.get("training_time_ms", ""))), border=1, fill=fill)
                 pdf.ln()
         pdf.ln(4)
 
@@ -448,22 +628,66 @@ async def generate_report(body: dict):
         summary = insights_results.get("executive_summary", "")
         if summary:
             pdf.set_font("Helvetica", "I", 9)
-            pdf.multi_cell(180, 5, safe_text(summary[:800]))
+            pdf.set_text_color(180, 180, 180)
+            pdf.multi_cell(180, 5, _safe_text(summary, max_chars=1200))
+            pdf.set_text_color(50, 50, 50)
             pdf.ln(4)
         insights_list = insights_results.get("ai_insights", [])
         if insights_list:
             pdf.set_font("Helvetica", "B", 10)
-            pdf.cell(0, 7, safe_text("Key Insights:"), ln=True)
-            pdf.set_font("Helvetica", "", 9)
+            pdf.cell(0, 7, _safe_text("Key Insights:"), ln=True)
             for insight in insights_list[:5]:
-                pdf.multi_cell(180, 5, safe_text(f"- {str(insight)[:120]}"))
+                clean = _safe_text(str(insight), max_chars=300)
+                if not clean:
+                    continue
+                pdf.set_font("Helvetica", "", 9)
+                pdf.set_text_color(200, 200, 200)
+                pdf.multi_cell(180, 6, f"  - {clean}")
+                pdf.ln(2)
+            pdf.set_text_color(50, 50, 50)
             pdf.ln(2)
+
+    # ── SECTION 8: Data Visualizations (auto-generated charts) ────────────────
+    try:
+        session_data = get_session(session_id) or {}
+        charts = _build_charts_from_session(session_data)
+        if charts:
+            pdf.add_page()
+            section_header(pdf, "8. Data Visualizations", 0, 140, 180)
+            pdf.set_font("Helvetica", "", 9)
+            pdf.set_text_color(180, 180, 180)
+            pdf.cell(0, 6, _safe_text("Auto-generated charts from your dataset."), ln=True)
+            pdf.ln(4)
+
+            for chart in charts:
+                # Chart title
+                pdf.set_font("Helvetica", "B", 11)
+                pdf.set_text_color(220, 220, 220)
+                pdf.cell(0, 8, _safe_text(chart["title"]), ln=True)
+
+                # Save PNG to temp file and embed
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    tmp.write(chart["img_bytes"])
+                    tmp_path = tmp.name
+                try:
+                    pdf.image(tmp_path, x=10, w=180)
+                finally:
+                    os.unlink(tmp_path)
+
+                # Insight caption
+                pdf.set_font("Helvetica", "I", 9)
+                pdf.set_text_color(160, 160, 160)
+                pdf.multi_cell(0, 5, _safe_text(f"Insight: {chart['insight']}"))
+                pdf.set_text_color(50, 50, 50)
+                pdf.ln(6)
+    except Exception as e:
+        logger.error(f"[CHART SECTION ERROR] {type(e).__name__}: {e}", exc_info=True)
 
     # Footer
     pdf.set_y(-20)
     pdf.set_font("Helvetica", "I", 8)
     pdf.set_text_color(150, 150, 150)
-    pdf.cell(0, 5, safe_text("Generated by AI Data Platform"), align="C", ln=True)
+    pdf.cell(0, 5, _safe_text("Generated by AI Data Platform"), align="C", ln=True)
 
     pdf_bytes = bytes(pdf.output())
 

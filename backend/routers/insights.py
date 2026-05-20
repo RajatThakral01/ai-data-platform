@@ -176,11 +176,11 @@ def _extract_kpis(df: pd.DataFrame, context: dict) -> list[dict]:
         try:
             col = k["column"]
             if k["calculation"] == "sum":
-                val = df[col].sum()
+                val = pd.to_numeric(df[col], errors='coerce').sum()
             elif k["calculation"] == "mean":
-                val = df[col].mean()
+                val = pd.to_numeric(df[col], errors='coerce').mean()
             else:
-                val = df[col].sum()
+                val = pd.to_numeric(df[col], errors='coerce').sum()
             kpis.append({
                 "label": " ".join(dict.fromkeys(k.get("name", "").split())).upper(),
                 "value": float(val),
@@ -317,9 +317,9 @@ def _generate_charts(df: pd.DataFrame, meta: dict, context: dict) -> list[dict]:
         # Aggregation
         if agg in ["sum", "mean", "count"] and y_col and y_col in plot_df.columns:
             if agg == "sum":
-                plot_df = plot_df.groupby(x_col)[y_col].sum().reset_index()
+                plot_df = plot_df.groupby(x_col)[[y_col]].sum(numeric_only=True).reset_index()
             elif agg == "mean":
-                plot_df = plot_df.groupby(x_col)[y_col].mean().reset_index()
+                plot_df = plot_df.groupby(x_col)[[y_col]].mean(numeric_only=True).reset_index()
             elif agg == "count":
                 plot_df = plot_df.groupby(x_col)[y_col].count().reset_index()
 

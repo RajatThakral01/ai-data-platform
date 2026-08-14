@@ -1,10 +1,9 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from session_store import get_session, update_session
-import httpx
 import os
 import json
-import time
+from llm.client_factory import get_llm_response, GROQ_MODEL_LARGE
 import pandas as pd
 from typing import Optional
 
@@ -183,126 +182,7 @@ MANDATORY RULES:
 - Canvas IDs MUST be exactly: chart_1, chart_2, ... chart_{len(charts_for_prompt)}"""
 
 
-# ── NIM API Call ──────────────────────────────────────────────────────────────
-
-async def _call_nvidia_nim(prompt: str) -> str:
-    api_key = os.getenv("NVIDIA_NIM_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="NVIDIA_NIM_API_KEY is not configured in .env")
-
-    models_to_try = [
-        "meta/llama-4-maverick-17b-128e-instruct",
-        "qwen/qwen2.5-coder-32b-instruct",
-    ]
-
-    last_error = ""
-
-    for model in models_to_try:
-        try:
-            print(f"=== Trying model: {model} ===")
-            payload = {
-                "model": model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an expert BI dashboard developer who writes flawless single-file HTML dashboards. "
-                            "You ONLY output raw HTML starting with <!DOCTYPE html> and ending with </html>. "
-                            "No markdown, no code fences, no commentary — only the HTML file itself."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": 8000,
-                "temperature": 0.25,
-            }
-
-            start_time = time.time()
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    "https://integrate.api.nvidia.com/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
-
-            print(f"=== NIM STATUS for {model}: {response.status_code} ===")
-
-            if response.status_code == 200:
-                latency_ms = int((time.time() - start_time) * 1000)
-                content = response.json()["choices"][0]["message"]["content"].strip()
-                if content.startswith("```"):
-                    lines = content.split("\n")
-                    content = "\n".join(lines[1:])
-                    if content.endswith("```"):
-                        content = content[:-3].strip()
-                log_call(
-                    module_name="bi_dashboard",
-                    model_used=model,
-                    latency_ms=latency_ms,
-                    prompt=None,
-                    response=None,
-                    success=True,
-                    fallback_used=False,
-                    error_message=None,
-                    session_id=None,
-                )
-                print(f"=== SUCCESS with model: {model} ===")
-                return content
-            else:
-                last_error = f"{model}: {response.status_code} {response.text[:200]}"
-                print(f"=== FAILED {model}: {response.status_code} ===")
-                log_call(
-                    module_name="bi_dashboard",
-                    model_used=model,
-                    latency_ms=int((time.time() - start_time) * 1000),
-                    prompt=None,
-                    response=None,
-                    success=False,
-                    fallback_used=False,
-                    error_message=last_error,
-                    session_id=None,
-                )
-                continue
-
-        except httpx.ReadTimeout:
-            last_error = f"{model}: ReadTimeout"
-            print(f"=== TIMEOUT on model: {model}, trying next ===")
-            log_call(
-                module_name="bi_dashboard",
-                model_used=model,
-                latency_ms=120000,
-                prompt=None,
-                response=None,
-                success=False,
-                fallback_used=False,
-                error_message=last_error,
-                session_id=None,
-            )
-            continue
-        except Exception as e:
-            last_error = f"{model}: {str(e)}"
-            print(f"=== ERROR on model: {model}: {e} ===")
-            log_call(
-                module_name="bi_dashboard",
-                model_used=model,
-                latency_ms=0,
-                prompt=None,
-                response=None,
-                success=False,
-                fallback_used=False,
-                error_message=last_error,
-                session_id=None,
-            )
-            continue
-
-    raise HTTPException(
-        status_code=502,
-        detail=f"All NIM models failed. Last error: {last_error}"
-    )
-
+# ── LLM API Call ──────────────────────────────────────────────────────────────
 
 async def _call_nim_focused(
     user_prompt: str,
@@ -310,116 +190,26 @@ async def _call_nim_focused(
     max_tokens: int = 3000,
 ) -> str:
     """
-    Focused NIM call with custom system prompt.
-    Uses same model fallback chain as _call_nvidia_nim.
+    Focused LLM call using Groq.
+    Keeps the same async signature so caller code doesn't break.
     """
-    api_key = os.getenv("NVIDIA_NIM_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="NVIDIA_NIM_API_KEY not configured"
-        )
-
-    models_to_try = [
-        "meta/llama-4-maverick-17b-128e-instruct",
-        "qwen/qwen2.5-coder-32b-instruct",
-    ]
-
-    last_error = ""
-    for model in models_to_try:
-        try:
-            payload = {
-                "model":       model,
-                "messages":    [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": user_prompt},
-                ],
-                "max_tokens":  max_tokens,
-            }
-
-            payload["temperature"] = 0.2
-
-            timeout = 120.0
-            start_time = time.time()
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
-                    "https://integrate.api.nvidia.com/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type":  "application/json",
-                    },
-                    json=payload,
-                )
-
-            if response.status_code == 200:
-                latency_ms = int((time.time() - start_time) * 1000)
-                content = response.json()["choices"][0]["message"]["content"].strip()
-                if content.startswith("```"):
-                    lines = content.split("\n")
-                    content = "\n".join(lines[1:])
-                    if content.endswith("```"):
-                        content = content[:-3].strip()
-                log_call(
-                    module_name="bi_dashboard",
-                    model_used=model,
-                    latency_ms=latency_ms,
-                    prompt=None,
-                    response=None,
-                    success=True,
-                    fallback_used=False,
-                    error_message=None,
-                    session_id=None,
-                )
-                return content
-
-            last_error = f"{model}: {response.status_code}"
-            log_call(
-                module_name="bi_dashboard",
-                model_used=model,
-                latency_ms=int((time.time() - start_time) * 1000),
-                prompt=None,
-                response=None,
-                success=False,
-                fallback_used=False,
-                error_message=last_error,
-                session_id=None,
-            )
-            continue
-
-        except httpx.ReadTimeout:
-            last_error = f"{model}: timeout"
-            print(f"=== TIMEOUT {model} ===")
-            log_call(
-                module_name="bi_dashboard",
-                model_used=model,
-                latency_ms=120000,
-                prompt=None,
-                response=None,
-                success=False,
-                fallback_used=False,
-                error_message=last_error,
-                session_id=None,
-            )
-            continue
-        except Exception as e:
-            last_error = f"{model}: {str(e)}"
-            log_call(
-                module_name="bi_dashboard",
-                model_used=model,
-                latency_ms=0,
-                prompt=None,
-                response=None,
-                success=False,
-                fallback_used=False,
-                error_message=last_error,
-                session_id=None,
-            )
-            continue
-
-    raise HTTPException(
-        status_code=502,
-        detail=f"All NIM models failed: {last_error}"
+    text, meta = get_llm_response(
+        user_prompt,
+        system_prompt=system_prompt,
+        temperature=0.2,
+        max_tokens=max_tokens,
+        groq_model=GROQ_MODEL_LARGE,
+        module_name="bi_dashboard",
     )
+    
+    content = text.strip()
+    if content.startswith("```"):
+        lines = content.split("\n")
+        content = "\n".join(lines[1:])
+        if content.endswith("```"):
+            content = content[:-3].strip()
+            
+    return content
 
 
 def _generate_table_html(

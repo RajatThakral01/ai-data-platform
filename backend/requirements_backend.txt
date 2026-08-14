@@ -8,13 +8,9 @@ xlrd
 scikit-learn
 fpdf2
 python-dotenv
-sentence-transformers
-chromadb
 groq
 google-generativeai
-hdbscan>=0.8.33
 redis>=4.0.0
 supabase>=2.0.0
-pgvector>=0.2.0
 ollama
 httpx>=0.27.0

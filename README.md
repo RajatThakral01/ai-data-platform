@@ -393,11 +393,9 @@ ai-data-platform/
 | **Frontend** | Next.js 14 (App Router), React, Tailwind CSS, ShadcnUI |
 | **Backend** | FastAPI, Python 3.10, Pydantic |
 | **Core LLM Providers** | Groq (Llama 3.3-70B), Gemini (2.0-flash), Ollama (local) |
-| **BI Dashboard LLMs** | NVIDIA NIM — Llama 4 Maverick / Qwen2.5-Coder-32B |
 | **Chart Generation** | Chart.js 4.4 (via CDN, rendered in sandboxed iframe) |
 | **Data Visualization** | Plotly.js, ECharts, Recharts (Insights page) |
 | **Session Storage** | Redis (production) / In-memory dict (local) |
-| **Vector Store** | Supabase pgvector (primary) / ChromaDB (fallback) |
 | **Data Processing** | Pandas, NumPy, scikit-learn |
 | **Testing** | Pytest, unittest.mock |
 

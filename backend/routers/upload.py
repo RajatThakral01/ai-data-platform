@@ -2,7 +2,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 import pandas as pd
 import io
 import math
-import threading
+
 from session_store import create_session, update_session
 
 router = APIRouter()
@@ -23,19 +23,7 @@ async def upload_file(file: UploadFile = File(...)):
         session_id = create_session()
         update_session(session_id, "df", df.where(pd.notnull(df), None).to_dict(orient="records"))
         update_session(session_id, "filename", file.filename)
-        
-        # We trigger RAG indexing in the background asynchronously if needed 
-        # (This avoids blocking the fast upload response)
-        try:
-            from rag.document_processor import process_and_index_dataframe
-            # Using threading for a lightweight fire-and-forget
-            threading.Thread(
-                target=process_and_index_dataframe, 
-                args=(df, file.filename, session_id)
-            ).start()
-        except ImportError:
-            pass
-            
+
         def clean_for_json(obj):
             import numpy as np
             if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):

@@ -26,7 +26,7 @@ if not env_loaded:
 
 
 
-from routers import upload, eda, cleaning, ml, insights, nl_query, report, observatory, query_clusters, export, html_dashboard
+from routers import upload, eda, cleaning, ml, insights, nl_query, report, observatory, export, html_dashboard
 
 app = FastAPI(title="AI Data Platform Backend")
 
@@ -58,7 +58,6 @@ app.include_router(insights.router, prefix="/api")
 app.include_router(nl_query.router, prefix="/api")
 app.include_router(report.router, prefix="/api")
 app.include_router(observatory.router, prefix="/api")
-app.include_router(query_clusters.router, prefix="/api")
 app.include_router(export.router, prefix="/api")
 app.include_router(html_dashboard.router, prefix="/api")
 

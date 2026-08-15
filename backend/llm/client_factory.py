@@ -47,8 +47,8 @@ BACKEND_GROQ = "groq"
 SUPPORTED_BACKENDS = {BACKEND_OLLAMA, BACKEND_GEMINI, BACKEND_GROQ}
 
 # Default models
-GROQ_MODEL_LARGE = "llama-3.3-70b-versatile"
-GROQ_MODEL_SMALL = "llama-3.1-8b-instant"
+GROQ_MODEL_LARGE = "openai/gpt-oss-120b"
+GROQ_MODEL_SMALL = "openai/gpt-oss-20b"
 DEFAULT_GROQ_MODEL = GROQ_MODEL_LARGE
 DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
 

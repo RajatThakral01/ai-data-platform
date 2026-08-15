@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Configuration defaults
 # ---------------------------------------------------------------------------
-DEFAULT_MODEL: str = "llama-3.3-70b-versatile"
+DEFAULT_MODEL: str = "openai/gpt-oss-120b"
 DEFAULT_TEMPERATURE: float = 0.2
 DEFAULT_SYSTEM_PROMPT: str = (
     "You are a helpful data-analysis assistant. "

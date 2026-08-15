@@ -112,6 +112,7 @@ class GroqClient:
         system_prompt: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = "low",
         **kwargs: Any,
     ) -> str:
         """Send *prompt* to Groq and return the response text.
@@ -157,6 +158,8 @@ class GroqClient:
         }
         if max_tokens is not None:
             create_kwargs["max_tokens"] = max_tokens
+        if reasoning_effort is not None and "gpt-oss" in self.model_name:
+            create_kwargs["reasoning_effort"] = reasoning_effort
 
         try:
             response = self._client.chat.completions.create(**create_kwargs)
@@ -187,7 +190,19 @@ class GroqClient:
             ) from exc
 
         if not content:
-            raise GroqQueryError("Groq returned an empty response.")
+            # Surface reasoning field lengths for easier debugging
+            msg_obj = response.choices[0].message
+            reasoning_len = 0
+            for attr in ("reasoning", "reasoning_content"):
+                val = getattr(msg_obj, attr, None)
+                if val:
+                    reasoning_len = len(str(val))
+                    break
+            extra = (
+                f" (reasoning field present: {reasoning_len} chars)"
+                if reasoning_len else " (no reasoning field found)"
+            )
+            raise GroqQueryError(f"Groq returned an empty response{extra}.")
 
         logger.info("Groq response received (%d chars).", len(content))
         return content

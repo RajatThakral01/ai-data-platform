@@ -122,7 +122,7 @@ def _generate_narrative(df: pd.DataFrame) -> str:
     )
     try:
         text, _ = get_llm_response(
-            prompt, temperature=0.3, max_tokens=300,
+            prompt, temperature=0.3, max_tokens=500,
             groq_model=GROQ_MODEL_SMALL, module_name="eda"
         )
         return text.strip()

@@ -11,11 +11,6 @@ import os
 import logging
 from dotenv import load_dotenv
 
-try:
-    from db.supabase_client import get_supabase
-    _supabase_available = True
-except ImportError:
-    _supabase_available = False
 
 load_dotenv()
 
@@ -119,9 +114,10 @@ def _exec_code(code: str, df: pd.DataFrame) -> str:
     """Execute generated code in a sandboxed environment and return result."""
     safe_builtins = {
         "len": len, "range": range, "str": str, "int": int, "float": float,
-        "list": list, "dict": dict, "tuple": tuple, "set": set,
+        "bool": bool, "list": list, "dict": dict, "tuple": tuple, "set": set,
         "sorted": sorted, "enumerate": enumerate, "zip": zip,
         "min": min, "max": max, "sum": sum, "abs": abs, "round": round,
+        "all": all, "any": any,
         "isinstance": isinstance, "type": type, "True": True, "False": False,
         "None": None, "print": lambda *a, **k: None,  # swallow prints
     }
@@ -273,22 +269,7 @@ def run_query(req: QueryRequest):
         summary = generate_summary(req.question, answer)
         follow_ups = generate_follow_ups(req.question, answer, df.columns.tolist())
 
-        if _supabase_available:
-            supabase = get_supabase()
-            if supabase:
-                try:
-                    supabase.table("nl_query_history").insert({
-                        "session_id": req.session_id,
-                        "question": req.question,
-                        "answer": str(answer)[:500],
-                        "query_type": query_type,
-                        "summary": summary,
-                        "follow_ups": follow_ups,
-                        "execution_time_ms": execution_time_ms,
-                        "success": True,
-                    }).execute()
-                except Exception as e:
-                    logger.warning(f"Failed to store query history: {e}")
+
 
         return clean_for_json({
             "question": req.question,

@@ -189,7 +189,7 @@ def run_ml(req: MLRequest):
         )
         try:
             ai_summary, _ = get_llm_response(
-                summary_prompt, temperature=0.3, max_tokens=300,
+                summary_prompt, temperature=0.3, max_tokens=500,
                 groq_model=GROQ_MODEL_SMALL, module_name="ml"
             )
         except Exception:

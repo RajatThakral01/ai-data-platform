@@ -375,7 +375,7 @@ def _generate_executive_summary(meta: dict) -> str:
     )
     try:
         text, _ = get_llm_response(
-            prompt, max_tokens=300,
+            prompt, max_tokens=500,
             groq_model=GROQ_MODEL_SMALL, module_name="data_insights"
         )
         return text

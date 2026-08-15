@@ -118,6 +118,7 @@ def get_llm_response(
     temperature: float = 0.3,
     max_tokens: int | None = None,
     groq_model: str = DEFAULT_GROQ_MODEL,
+    reasoning_effort: str | None = "low",
     host: str = "http://localhost:11434",
     module_name: str = "unknown",
 ) -> tuple[str, dict[str, Any]]:
@@ -138,8 +139,11 @@ def get_llm_response(
     max_tokens : int | None
         Maximum tokens in response (caps cost & prevents runaway).
     groq_model : str
-        Groq model to use — ``GROQ_MODEL_LARGE`` (70b, code) or
-        ``GROQ_MODEL_SMALL`` (8b, narratives).  Default: 70b.
+        Groq model to use — ``GROQ_MODEL_LARGE`` (120b, code) or
+        ``GROQ_MODEL_SMALL`` (20b, narratives).  Default: 120b.
+    reasoning_effort : str | None
+        Passed to Groq reasoning models only (``"low"``, ``"default"``,
+        ``"high"``, or ``None`` to omit).  Default: ``"low"``.
     host : str
         Ollama server URL (used only for the Ollama fallback).
     module_name : str
@@ -188,7 +192,12 @@ def get_llm_response(
                 temperature=temperature,
                 host=host,
             )
-            result = client.query(prompt, max_tokens=max_tokens)
+            result = client.query(
+                prompt,
+                max_tokens=max_tokens,
+                **(({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {})
+                   if backend == BACKEND_GROQ else {})
+            )
 
             # Build fallback warning if we're not on the first choice
             fallback_warning = None
